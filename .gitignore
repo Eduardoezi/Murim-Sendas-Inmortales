@@ -1,8 +1,18 @@
+# Dependencias y build
 node_modules/
-build/
 dist/
-coverage/
-.DS_Store
-*.log
-.env*
-!.env.example
+
+# Base de datos local
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Archivos de diagnóstico y locks ajenos
+estructura.txt
+bun.lock
+
+# Variables de entorno
+.env
+
+
