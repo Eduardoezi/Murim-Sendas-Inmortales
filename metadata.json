@@ -1,0 +1,6 @@
+{
+  "name": "Murim: Sendas Inmortales",
+  "description": "Juego multijugador en tiempo real de artes marciales y cultivación de sectas Murim, con economía de subastas, alquimia, dantian y combate estratégico.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
