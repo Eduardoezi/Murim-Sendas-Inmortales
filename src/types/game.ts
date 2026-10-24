@@ -61,13 +61,13 @@ export interface MartialTechnique {
   pinyin?: string;
   element: ElementType;
   qiCost: number;
-  cooldown: number; // turns
+  cooldown: number;
   powerMultiplier: number;
   effect: 'damage' | 'stun' | 'shield' | 'bleed' | 'burn' | 'heal' | 'drain' | 'illusion';
   effectValue: number;
   description: string;
   requiredRealm: CultivationRealm;
-  masteryLevel: number; // 1 to 5+
+  masteryLevel: number;
   masteryExp: number;
   grade: ItemRarity;
   classSpecific?: CharacterClass;
@@ -75,7 +75,7 @@ export interface MartialTechnique {
 
 export interface LibraryScroll {
   id: string;
-  code: string; // e.g. DTM001, C001, A001
+  code: string;
   title: string;
   chineseTitle: string;
   category: 'marcial' | 'cultivo' | 'alquimia' | 'forja' | 'formacion' | 'medicina';
@@ -89,7 +89,7 @@ export interface LibraryScroll {
   effects: string;
   originSect: string;
   isUnlocked: boolean;
-  studyProgress: number; // 0 to 100
+  studyProgress: number;
   isMastered: boolean;
 }
 
@@ -155,7 +155,7 @@ export interface Item {
     suerte?: number;
   };
   cultivationBoost?: number;
-  value: number; // Spirit stones
+  value: number;
   currencyType?: 'stones' | 'merits' | 'gold';
   element?: ElementType;
   quantity?: number;
@@ -166,9 +166,9 @@ export interface Disciple {
   name: string;
   realm: CultivationRealm;
   aptitude: 'Ordinario' | 'Notable' | 'Genio Celestial' | 'Monstruo del Dao';
-  loyalty: number; // 0 - 100
+  loyalty: number;
   assignedTask: 'none' | 'meditation' | 'herb_gathering' | 'sect_patrol' | 'refining' | 'library_archiving';
-  taskProgress: number; // 0 - 100
+  taskProgress: number;
   taskDurationSeconds: number;
   tributeYield: {
     spiritStones: number;
@@ -205,9 +205,9 @@ export interface WorldMapNode {
   recommendedRealm: CultivationRealm;
   description: string;
   rulerFaction: string;
-  coordinates: { x: number; y: number }; // percentage on map
+  coordinates: { x: number; y: number };
   availableResources: string[];
-  threatLevel: number; // 1 to 10
+  threatLevel: number;
   unlocked: boolean;
 }
 
@@ -230,7 +230,7 @@ export interface SectInfo {
   alignment: 'Ortodoxa' | 'Pabellón Académico' | 'Fuerza Marcial' | 'Sombra Inmortal';
   description: string;
   leaderName: string;
-  territoryControl: number; // percentage
+  territoryControl: number;
   totalMembers: number;
   sectTreasury: number;
   activeBuff: string;
@@ -258,7 +258,7 @@ export interface AuctionListing {
   buyoutPrice: number;
   highestBidderId?: string;
   highestBidderName?: string;
-  expiresAt: number; // timestamp
+  expiresAt: number;
   currencyType?: 'stones' | 'merits';
   meritBuyoutPrice?: number;
 }
@@ -289,12 +289,13 @@ export interface WorldBossState {
 
 export interface Cultivator {
   id: string;
+  userId?: number;
   name: string;
   chineseName?: string;
   classType: CharacterClass;
   title: string;
   realm: CultivationRealm;
-  subRealm: number; // 1 to 6 o 1 to 9
+  subRealm: number;
   dantianScale: DantianScale;
   qi: number;
   maxQi: number;
@@ -302,7 +303,7 @@ export interface Cultivator {
   maxHp: number;
   activeMissions?: ActiveMission[];
   
-  // Atributos Fundamentales del Lore (Módulo 2 & 5)
+  // Atributos Fundamentales del Lore
   attributes: {
     fuerza: number;
     destreza: number;
@@ -316,18 +317,20 @@ export interface Cultivator {
     sabiduria: number;
   };
   
- 
+  // Nuevos campos lore
   bazi?: BaZi;
   physiques?: Physique[];
   providences?: Providence[];
   soul?: SoulData;
   background?: string;
+  backgroundStory?: string; // Añadido del Master Prompt
+  origin?: string;          // Añadido del Master Prompt
   affinity?: 'Ortodoxo' | 'Heterodoxo' | 'Demoniaco';
-  lineage?: 'Noble' | 'Plebeyo';
+  lineage?: 'Noble' | 'Plebeyo' | 'Hijo de secta' | 'Hijo de realeza';
+  birthDate?: string;       // Guardamos la fecha para calcular la edad
 
-  // Karma & Reputación
-  karma: number; // -1000 a +1000 (Claro vs Oscuro)
-  fama: number; // -1000 a +1000
+  karma: number;
+  fama: number;
   freeAttributePoints: number;
   freeSkillPoints: number;
 
@@ -335,9 +338,8 @@ export interface Cultivator {
   baseDefense: number;
   spiritPower: number;
   speed: number;
-  spiritSense: number; // Sentido Espiritual (radio de percepción en metros)
+  spiritSense: number;
   
-  // Economía completa
   currency: {
     gold: number;
     silver: number;
@@ -353,7 +355,7 @@ export interface Cultivator {
   reputation?: Record<string, number>;
   sectId: string;
   sectRank: SectRank;
-  dantianPurity: number; // 0 to 100%
+  dantianPurity: number;
   meridians: Meridian[];
   
   inventoryMaxSlots: number;
@@ -399,7 +401,7 @@ export interface AlchemyRecipe {
   rarity: ItemRarity;
   description: string;
   requiredSpirit: number;
-  optimalTemperature: number; // 0 - 100
+  optimalTemperature: number;
   ingredients: { itemId: string; name: string; amount: number }[];
   resultItem: Item;
 }
@@ -445,7 +447,7 @@ export interface ActiveMission {
   type: 'Caza' | 'Recolección' | 'Viaje' | 'Cultivo';
   targetRegionId: string;
   durationMinutes: number;
-  startedAt: number; // Timestamp
+  startedAt: number;
   status: 'in_progress' | 'completed' | 'claimed';
   rewardStones: number;
   rewardReputation: number;

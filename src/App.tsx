@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { GameProvider, useGame } from './context/GameContext';
+import { AuthScreen } from './components/AuthScreen'; // <-- IMPORTAR
 import { TitleScreen } from './components/TitleScreen';
 import { Sidebar, SIDEBAR_SECTIONS } from './components/Sidebar';
 import { SubNav, type SubTab } from './components/SubNav';
@@ -33,17 +34,25 @@ interface NavState {
 }
 
 const GameContent: React.FC = () => {
-  const { cultivator, isConnected } = useGame();
+  // OBTENER TOKEN ADEMÁS DE CULTIVATOR
+  const { cultivator, isConnected, token } = useGame();
+  
   const [nav, setNav] = useState<NavState>({ section: 'acciones', subTab: 'cultivo' });
   const [isInventoryOpen, setIsInventoryOpen] = useState<boolean>(false);
   const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
-  // ESTADO CLAVE: Guarda qué mazmorra está activa
   const [activeDungeon, setActiveDungeon] = useState<PointOfInterest | null>(null);
 
+  // 1. SI NO HAY TOKEN -> MOSTRAR PANTALLA DE LOGIN/REGISTRO
+  if (!token) {
+    return <AuthScreen />;
+  }
+
+  // 2. SI HAY TOKEN PERO NO HAY CULTIVADOR -> MOSTRAR SELECCIÓN/CREACIÓN
   if (!cultivator) {
     return <TitleScreen />;
   }
 
+  // 3. SI HAY TOKEN Y CULTIVADOR -> MOSTRAR EL JUEGO
   const currentSection = SIDEBAR_SECTIONS.find((s) => s.id === nav.section);
   const currentSectionLabel = currentSection?.label ?? '';
   const currentSubTabs: SubTab[] = useMemo(() => {
@@ -61,7 +70,6 @@ const GameContent: React.FC = () => {
     setNav((prev) => ({ ...prev, subTab: subTabId }));
   };
 
-  // ============ RENDERIZADO DEL CONTENIDO ============
   const renderContent = () => {
     const key = `${nav.section}/${nav.subTab}`;
 
@@ -73,8 +81,6 @@ const GameContent: React.FC = () => {
     if (key === 'acciones/misiones') return <MissionRegistryView />;
     if (key === 'acciones/subasta') return <AuctionHouseView onNavigateToMerits={() => setNav({ section: 'perfil', subTab: 'cronica' })} />;
 
-    // ============ SECCIÓN MUNDO ============
-    
     if (key === 'mundo/mapa') return <WorldMapView onNavigateToCity={() => setNav({ section: 'mundo', subTab: 'provincia' })} />;
     
     if (key === 'mundo/provincia') {
@@ -88,7 +94,6 @@ const GameContent: React.FC = () => {
       />;
     }
 
-    // RUTA DE MAZMORRA: Si no hay mazmorra activa, redirige a la provincia
     if (key === 'mundo/mazmorra') {
       if (!activeDungeon) {
         return <ProvinceMapView 
@@ -114,7 +119,6 @@ const GameContent: React.FC = () => {
     if (key === 'mundo/facciones') return <WorldFactionsView />;
     if (key === 'mundo/chunks') return <ChunksVisitedView />;
 
-    // PERFIL
     if (key === 'perfil/habilidades') return <MartialTechniquesView />;
     if (key === 'clan/general') return <SectPavilionView />;
     if (key === 'perfil/cronica' && false) return <MeritsBoardView />;
@@ -187,4 +191,4 @@ export default function App() {
       <GameContent />
     </GameProvider>
   );
-}
+};

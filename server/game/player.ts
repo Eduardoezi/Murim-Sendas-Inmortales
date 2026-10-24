@@ -1,10 +1,11 @@
 import { getDb } from '../db';
 import { Cultivator } from '../../src/types/game';
 
- type PlayerWithLastSeenAt = Cultivator & {
+// Extendemos el tipo de Cultivator para asegurar que el servidor maneje lastSeenAt
+type PlayerWithLastSeenAt = Cultivator & {
   lastSeenAt?: number;
 };
- 
+
 export interface PlayerSummary {
   id: string;
   name: string;
@@ -15,45 +16,54 @@ export interface PlayerSummary {
   updatedAt: number;
 }
 
-export function processOfflineProgress(player: PlayerWithLastSeenAt): { 
-  updatedPlayer: Cultivator; 
-  offlineMinutes: number; 
-  qiGained: number; 
+export interface OfflineProgressResult {
+  updatedPlayer: PlayerWithLastSeenAt;
+  offlineMinutes: number;
+  qiGained: number;
   missionsCompleted: number;
-} {
+}
+
+/**
+ * Calcula el progreso del jugador mientras estuvo desconectado.
+ * Reglas:
+ * - El Qi se regenera pasivamente basado en la pureza del Dantian.
+ * - Tope máximo de 24 horas para evitar exploits.
+ * - Las misiones asíncronas que terminaron se marcan como completadas.
+ */
+export function processOfflineProgress(player: PlayerWithLastSeenAt): OfflineProgressResult {
   const now = Date.now();
   // Si el jugador es nuevo o no tiene lastSeenAt, asumimos que acaba de entrar
-  const lastSeen = player.lastSeenAt || now; 
+  const lastSeen = player.lastSeenAt || now;
   const offlineMs = Math.max(0, now - lastSeen);
-  
-  // Tope máximo de 24 horas offline para evitar exploits
+
+  // Tope máximo de 24 horas offline para evitar exploits de tiempo
   const cappedMs = Math.min(offlineMs, 24 * 60 * 60 * 1000);
   const offlineMinutes = Math.floor(cappedMs / 60000);
 
-  // Si estuvo fuera menos de 1 minuto, no hacemos nada
+  // Si estuvo fuera menos de 1 minuto, no hacemos nada (ahorra escrituras en DB)
   if (offlineMinutes < 1) {
-    return { 
-      updatedPlayer: { ...player, lastSeenAt: now }, 
-      offlineMinutes: 0, 
-      qiGained: 0, 
-      missionsCompleted: 0 
+    return {
+      updatedPlayer: { ...player, lastSeenAt: now },
+      offlineMinutes: 0,
+      qiGained: 0,
+      missionsCompleted: 0,
     };
   }
 
   // Fórmula de Regeneración de Qi Offline:
   // Base: 1 Qi cada 2 segundos (30 Qi por minuto) modificado por la pureza del Dantian
-  const qiPerMinute = Math.max(10, Math.floor(player.dantianPurity / 2));
-  let potentialQiGain = qiPerMinute * offlineMinutes;
-  
+  const qiPerMinute = Math.max(10, Math.floor((player.dantianPurity || 35) / 2));
+  const potentialQiGain = qiPerMinute * offlineMinutes;
+
   // El Qi no puede exceder el máximo del Dantian
   const newQi = Math.min(player.maxQi, player.qi + potentialQiGain);
   const actualQiGained = newQi - player.qi;
 
   // Procesar misiones asíncronas que hayan terminado mientras estaba offline
   let missionsCompleted = 0;
-  const updatedMissions = (player.activeMissions || []).map(m => {
+  const updatedMissions = (player.activeMissions || []).map((m) => {
     if (m.status === 'in_progress') {
-      const endTime = m.startedAt + (m.durationMinutes * 60 * 1000);
+      const endTime = m.startedAt + m.durationMinutes * 60 * 1000;
       if (now >= endTime) {
         missionsCompleted++;
         return { ...m, status: 'completed' as const };
@@ -67,17 +77,24 @@ export function processOfflineProgress(player: PlayerWithLastSeenAt): {
       ...player,
       qi: newQi,
       activeMissions: updatedMissions,
-      lastSeenAt: now
+      lastSeenAt: now,
     },
     offlineMinutes,
     qiGained: actualQiGained,
-    missionsCompleted
+    missionsCompleted,
   };
 }
 
+/**
+ * Carga al jugador desde SQLite.
+ * Importante: Lee el last_seen_at de la DB para calcular el offline correctamente.
+ */
 export function loadPlayer(id: string): Cultivator | null {
   const row = getDb().prepare('SELECT * FROM players WHERE id = ?').get(id) as any;
   if (!row) return null;
+
+  // Función auxiliar para convertir el timestamp de SQLite (segundos) a milisegundos
+  const lastSeenAtMs = row.last_seen_at ? row.last_seen_at * 1000 : undefined;
 
   if (row.profile_json) {
     try {
@@ -103,7 +120,9 @@ export function loadPlayer(id: string): Cultivator | null {
         currentLocationNodeId: row.current_location_node_id || full.currentLocationNodeId,
         activeMissions: row.active_missions_json ? JSON.parse(row.active_missions_json) : [],
         reputation: row.reputation_json ? JSON.parse(row.reputation_json) : {},
-      };
+        // INYECTAMOS el lastSeenAt para que el flujo offline funcione
+        lastSeenAt: lastSeenAtMs,
+      } as PlayerWithLastSeenAt;
     } catch (e) {
       console.error('[db] Error parsing profile_json for player', id, e);
     }
@@ -151,12 +170,18 @@ export function loadPlayer(id: string): Cultivator | null {
     spiritPower: 10,
     speed: 10,
     spiritSense: 40,
-  } as Cultivator;
+    lastSeenAt: lastSeenAtMs,
+  } as PlayerWithLastSeenAt;
 }
 
-export function savePlayer(player: Cultivator): void {
+/**
+ * Guarda al jugador en SQLite.
+ * Actualiza tanto el estado actual como el last_seen_at.
+ */
+export function savePlayer(player: Cultivator & { lastSeenAt?: number }): void {
   const db = getDb();
   const now = Date.now();
+  const lastSeenAtSeconds = Math.floor((player.lastSeenAt || now) / 1000);
 
   db.prepare(`
     INSERT INTO players (
@@ -213,12 +238,13 @@ export function savePlayer(player: Cultivator): void {
     inventory_json: JSON.stringify(player.inventory || []),
     disciples_json: JSON.stringify(player.disciples || []),
     currency_json: JSON.stringify(player.currency || {}),
-    profile_json: JSON.stringify(player),
+    // Guardamos el estado completo pero sin el lastSeenAt (para no duplicar datos)
+    profile_json: JSON.stringify({ ...player, lastSeenAt: undefined }),
     active_missions_json: JSON.stringify(player.activeMissions || []),
     reputation_json: JSON.stringify(player.reputation || {}),
     created_at: now,
     updated_at: now,
-    last_seen_at: now,
+    last_seen_at: lastSeenAtSeconds,
   });
 }
 

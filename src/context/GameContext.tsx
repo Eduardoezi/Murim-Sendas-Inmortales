@@ -10,25 +10,19 @@ import {
   CustomSecretTechnique,
   SectMission,
   Disciple,
+  SectRank,
 } from '../types/game';
 import {
-  CHARACTER_CLASSES,
   INITIAL_MERIDIANS,
   SECTS_LIST,
-  INITIAL_TECHNIQUES,
   INITIAL_SECT_MISSIONS,
   INITIAL_WORLD_BOSS,
   MERIT_MILESTONES,
   LIBRARY_SCROLLS,
-  SECT_STORE_ITEMS,
 } from '../data/gameData';
-
-// IMPORTAR LOS DATOS NUEVOS DEL MUNDO
 import { MAP_REGIONS, WORLD_BEASTS } from '../data/worldData';
 import { murimAudio } from '../utils/audio';
-import { SectRank } from '../types/game';
 
-// Función auxiliar para calcular el rango según los méritos
 const calculateSectRank = (merits: number): SectRank => {
   if (merits >= 8000) return 'Líder Supremo / Patriarca';
   if (merits >= 3500) return 'Gran Maestro';
@@ -69,6 +63,13 @@ interface GameContextType {
   pendingDuelInvite: { challengerId: string; challengerName: string; challengerRealm: string } | null;
   missions: SectMission[];
   isConnected: boolean;
+  token: string | null;
+  playerId: string | null;
+  authError: string | null;
+  authLoading: boolean;
+  login: (email: string, password: string) => Promise<boolean>;
+  register: (email: string, password: string) => Promise<boolean>;
+  logout: () => void;
   createCharacter: (name: string, classType: CharacterClass, sectId: string) => void;
   createSyntacticCharacter: (payload: any) => Promise<void>;
   loadSavedCharacter: (character: Cultivator) => void;
@@ -118,12 +119,27 @@ interface GameContextType {
 
 const GameContext = createContext<GameContextType | undefined>(undefined);
 
-
 const LOCAL_STORAGE_KEY = 'murim_cultivator_profile_v1';
+const TOKEN_KEY = 'murim_token';
+const PLAYER_ID_KEY = 'murim_player_id';
 
 export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [token, setToken] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem(TOKEN_KEY);
+  });
+  const [playerId, setPlayerId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem(PLAYER_ID_KEY);
+  });
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState(false);
+
   const [cultivator, setCultivator] = useState<Cultivator | null>(() => {
     if (typeof window === 'undefined') return null;
+    const savedToken = localStorage.getItem(TOKEN_KEY);
+    const savedPlayerId = localStorage.getItem(PLAYER_ID_KEY);
+    if (!savedToken || !savedPlayerId) return null;
     const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
     if (saved) {
       try {
@@ -149,10 +165,8 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
         if (!parsed.inventoryMaxSlots) parsed.inventoryMaxSlots = 30;
         if (!parsed.stats) parsed.stats = { duelsWon: 0, duelsLost: 0, bossDamageDealt: 0, pillsCrafted: 0, meridiansOpened: 0, auctionsWon: 0, disciplesRecruited: 1, scrollsMastered: 0, nodesDiscovered: 3 };
-        
         if (!parsed.activeMissions) parsed.activeMissions = [];
         if (!parsed.reputation) parsed.reputation = {};
-        
         return parsed;
       } catch {
         return null;
@@ -180,32 +194,31 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [cultivator]);
 
+  // ---------- WebSocket autenticado ----------
   useEffect(() => {
+    if (!token || !playerId) {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      setIsConnected(false);
+      return;
+    }
+
+    let cancelled = false;
     let ws: WebSocket;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
     const wsUrl = `${protocol}//${host}`;
 
     function connect() {
+      if (cancelled) return;
       ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
         setIsConnected(true);
-        if (cultivator) {
-          const currentSect = sects.find(s => s.id === cultivator.sectId);
-          ws.send(JSON.stringify({
-            type: 'player_auth',
-            payload: {
-              id: cultivator.id,
-              name: cultivator.name,
-              realm: cultivator.realm,
-              sectId: cultivator.sectId,
-              sectName: currentSect?.name || 'Vagabundo del Jianghu',
-              classType: cultivator.classType,
-            },
-          }));
-        }
+        ws.send(JSON.stringify({ type: 'auth', payload: { token, playerId } }));
       };
 
       ws.onmessage = (event) => {
@@ -219,6 +232,18 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
               if (payload.auctionListings) setAuctionListings(payload.auctionListings);
               if (payload.sects) setSects(payload.sects);
               break;
+            case 'auth_ok':
+              setAuthError(null);
+              break;
+            case 'auth_error':
+              setAuthError(payload.message || 'Error de autenticación.');
+              localStorage.removeItem(TOKEN_KEY);
+              localStorage.removeItem(PLAYER_ID_KEY);
+              setToken(null);
+              setPlayerId(null);
+              setCultivator(null);
+              ws.close();
+              break;
             case 'players_update':
               setOnlinePlayers(payload);
               break;
@@ -230,22 +255,10 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
               break;
             case 'auction_item_received':
               murimAudio.playGavelTap();
-              setCultivator(prev => {
-                if (!prev) return null;
-                const isMerit = payload.currencyType === 'merits';
-                return {
-                  ...prev,
-                  spiritStones: isMerit ? prev.spiritStones : Math.max(0, prev.spiritStones - payload.price),
-                  sectMerits: isMerit ? Math.max(0, prev.sectMerits - payload.price) : prev.sectMerits,
-                  inventory: [payload.item, ...prev.inventory],
-                  stats: { ...prev.stats, auctionsWon: (prev.stats?.auctionsWon || 0) + 1 },
-                };
-              });
               break;
             case 'chat_broadcast':
               setChatMessages(prev => [...prev.slice(-40), payload]);
               break;
-
             case 'player_sync':
               setCultivator({
                 ...payload,
@@ -271,16 +284,6 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
               break;
             case 'duel_update':
               setActiveDuel(payload);
-              if (payload.status === 'finished') {
-                setCultivator(prev => {
-                  if (!prev) return null;
-                  if (payload.winnerId === prev.id) {
-                    return { ...prev, sectMerits: prev.sectMerits + 80, stats: { ...prev.stats, duelsWon: prev.stats.duelsWon + 1 } };
-                  } else {
-                    return { ...prev, stats: { ...prev.stats, duelsLost: prev.stats.duelsLost + 1 } };
-                  }
-                });
-              }
               break;
           }
         } catch (e) {
@@ -290,45 +293,109 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       ws.onclose = () => {
         setIsConnected(false);
-        setTimeout(connect, 3000);
+        if (!cancelled) {
+          setTimeout(connect, 3000);
+        }
       };
     }
 
     connect();
-    return () => { if (ws) ws.close(); };
-  }, [cultivator?.id]);
+    return () => {
+      cancelled = true;
+      if (ws) ws.close();
+    };
+  }, [token, playerId]);
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setCultivator(prev => {
-        if (!prev) return null;
-        const regenRate = Math.max(1, Math.floor(prev.dantianPurity / 20));
-        const newQi = Math.min(prev.maxQi, prev.qi + regenRate);
-        const updatedDisciples = (prev.disciples || []).map(d => {
-          if (d.assignedTask !== 'none' && d.taskProgress < 100) {
-            return { ...d, taskProgress: Math.min(100, d.taskProgress + 10) };
-          }
-          return d;
-        });
-        return { ...prev, qi: newQi, disciples: updatedDisciples };
+  // ---------- Auth ----------
+  const login = async (email: string, password: string): Promise<boolean> => {
+    setAuthLoading(true);
+    setAuthError(null);
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
       });
-    }, 2000);
-    return () => clearInterval(interval);
-  }, []);
+      const data = await res.json();
+      if (!data.success) {
+        setAuthError(data.message || 'Error al iniciar sesión.');
+        return false;
+      }
+      localStorage.setItem(TOKEN_KEY, data.token);
+      setToken(data.token);
+      return true;
+    } catch (err) {
+      setAuthError((err as Error).message);
+      return false;
+    } finally {
+      setAuthLoading(false);
+    }
+  };
 
+  const register = async (email: string, password: string): Promise<boolean> => {
+    setAuthLoading(true);
+    setAuthError(null);
+    try {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        setAuthError(data.message || 'Error al registrar.');
+        return false;
+      }
+      localStorage.setItem(TOKEN_KEY, data.token);
+      setToken(data.token);
+      return true;
+    } catch (err) {
+      setAuthError((err as Error).message);
+      return false;
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const logout = () => {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(PLAYER_ID_KEY);
+    localStorage.removeItem(LOCAL_STORAGE_KEY);
+    setToken(null);
+    setPlayerId(null);
+    setCultivator(null);
+    setAuthError(null);
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+  };
+
+  // ---------- Personaje ----------
   const createSyntacticCharacter = async (payload: any) => {
+    if (!token) {
+      setAuthError('Debes iniciar sesión para crear un personaje.');
+      return;
+    }
+    
+    setAuthLoading(true); // <-- INICIAR CARGA
+    setAuthError(null);
+    
     try {
       const newId = `cultivator_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
       const bodyData = { id: newId, ...payload };
-      
+
       const res = await fetch('/api/player/create', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify(bodyData),
       });
 
       const data = await res.json();
-      
+
       if (data.success && data.player) {
         setCultivator({
           ...data.player,
@@ -340,53 +407,34 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
           activeMissions: data.player.activeMissions || [],
           reputation: data.player.reputation || {},
         });
+        localStorage.setItem(PLAYER_ID_KEY, data.player.id);
+        setPlayerId(data.player.id);
         murimAudio.playBreakthroughGong();
-        
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          const currentSect = sects.find(s => s.id === data.player.sectId);
-          wsRef.current.send(JSON.stringify({
-            type: 'player_auth',
-            payload: {
-              id: data.player.id,
-              name: data.player.name,
-              realm: data.player.realm,
-              sectId: data.player.sectId,
-              sectName: currentSect?.name || 'Vagabundo del Jianghu',
-              classType: data.player.classType,
-            },
-          }));
-        }
       } else {
-        alert(`Error del Servidor: ${data.message || 'Desconocido'}`);
+        setAuthError(data.message || 'Error al crear personaje.');
       }
     } catch (err) {
-      console.error('[cliente] Error fatal:', err);
-      alert(`Error de conexión: ${(err as Error).message}`);
+      setAuthError((err as Error).message);
+    } finally {
+      setAuthLoading(false); // <-- DETENER CARGA
     }
   };
 
   const loadSavedCharacter = (savedCultivator: Cultivator) => {
-    setCultivator(savedCultivator);
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(savedCultivator));
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      const currentSect = sects.find(s => s.id === savedCultivator.sectId);
-      wsRef.current.send(JSON.stringify({
-        type: 'player_auth',
-        payload: {
-          id: savedCultivator.id,
-          name: savedCultivator.name,
-          realm: savedCultivator.realm,
-          sectId: savedCultivator.sectId,
-          sectName: currentSect?.name || 'Vagabundo del Jianghu',
-          classType: savedCultivator.classType,
-          fullPlayerData: savedCultivator,
-        },
-      }));
+    if (!token) {
+      setAuthError('Debes iniciar sesión.');
+      return;
     }
+    setCultivator(savedCultivator);
+    localStorage.setItem(PLAYER_ID_KEY, savedCultivator.id);
+    setPlayerId(savedCultivator.id);
+    // El servidor enviará player_sync al autenticar el WS.
   };
 
   const resetCharacter = () => {
     setCultivator(null);
+    setPlayerId(null);
+    localStorage.removeItem(PLAYER_ID_KEY);
     localStorage.removeItem(LOCAL_STORAGE_KEY);
   };
 
@@ -442,38 +490,26 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     sendPlayerAction('allocate_attribute', { attrKey });
   };
 
-    const collectDungeonLoot = (stones: number, item: Item | undefined, qiCost: number) => {
+  const collectDungeonLoot = (stones: number, item: Item | undefined, qiCost: number) => {
     if (!cultivator) return;
-    
     murimAudio.playCoinClink();
-    
     setCultivator(prev => {
       if (!prev) return null;
-      
       const newInventory = [...prev.inventory];
-      if (item && newInventory.length < prev.inventoryMaxSlots) {
-        newInventory.push(item);
-      }
-      
+      if (item && newInventory.length < prev.inventoryMaxSlots) newInventory.push(item);
       const newStats = { ...prev.stats, bossDamageDealt: (prev.stats?.bossDamageDealt || 0) + 100 };
-
       return {
         ...prev,
         spiritStones: prev.spiritStones + stones,
         qi: Math.max(0, prev.qi - qiCost),
         inventory: newInventory,
-        stats: newStats
+        stats: newStats,
       };
     });
   };
 
   const acceptMission = (mission: any) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ 
-        type: 'player_action', 
-        payload: { action: 'accept_mission', mission } 
-      }));
-    }
+    sendPlayerAction('accept_mission', { mission });
   };
 
   const claimMission = (missionId: string) => {
@@ -481,54 +517,24 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!mission || !mission.completed || mission.claimed) return;
     murimAudio.playQiChime();
     setMissions(prev => prev.map(m => (m.id === missionId ? { ...m, claimed: true } : m)));
-    
-    setCultivator(prev => {
-      if (!prev) return null;
-      const newMerits = prev.sectMerits + mission.rewardMerits;
-      const newRank = calculateSectRank(newMerits);
-
-      if (newRank !== prev.sectRank) {
-        setTimeout(() => alert(`¡Has ascendido a: ${newRank.toUpperCase()}!`), 100);
-      }
-
-      return {
-        ...prev,
-        spiritStones: prev.spiritStones + mission.rewardStones,
-        sectMerits: newMerits,
-        sectRank: newRank, // <--- ACTUALIZA RANGO
-        qi: Math.min(prev.maxQi, prev.qi + mission.rewardExp)
-      };
-    });
+    sendPlayerAction('claim_mission', { missionId });
   };
 
   const studyLibraryScroll = (scrollId: string): { success: boolean; message: string } => {
     if (!cultivator) return { success: false, message: 'Cultivador no encontrado.' };
     const scroll = cultivator.libraryScrolls.find(s => s.id === scrollId);
     if (!scroll || scroll.isMastered) return { success: false, message: 'Rollo no válido.' };
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'player_action', payload: { action: 'study_scroll', scrollId } }));
-      return { success: true, message: 'Iniciando estudio...' };
-    }
-    return { success: false, message: 'Desconectado del servidor.' };
+    const ok = sendPlayerAction('study_scroll', { scrollId });
+    return ok ? { success: true, message: 'Iniciando estudio...' } : { success: false, message: 'Desconectado del servidor.' };
   };
 
   const craftPill = (recipeId: string, currentTemp: number) => {
-    if (!cultivator) return { success: false, message: 'Cultivador no encontrado' };
+    if (!cultivator) return { success: false, message: 'Cultivador no encontrado.' };
     murimAudio.playAlchemyStir();
-    const tempDelta = Math.abs(currentTemp - 50);
-    const successRate = Math.max(20, 100 - tempDelta * 1.5);
-    const roll = Math.random() * 100;
-    if (roll <= successRate) {
-      const craftedPill: Item = {
-        id: `pill_crafted_${Date.now()}`,
-        name: recipeId === 'recipe_breakthrough' ? 'Píldora Rompe-Cielos' : 'Píldora Purificadora de Qi Refinada',
-        category: 'pill', rarity: recipeId === 'recipe_breakthrough' ? 'Raro' : 'Común',
-        description: 'Elaborada artesanalmente en el Gran Caldero.', cultivationBoost: 250, value: 120,
-      };
-      setCultivator(prev => prev ? { ...prev, inventory: [craftedPill, ...prev.inventory], spiritStones: prev.spiritStones + 20, stats: { ...prev.stats, pillsCrafted: prev.stats.pillsCrafted + 1 } } : null);
-      return { success: true, message: `¡Fuego de caldero perfecto! Has obtenido [${craftedPill.name}].` };
-    }
-    return { success: false, message: 'La llama espiritual fluctuó demasiado. Los ingredientes se redujeron a cenizas medicinales.' };
+    const ok = sendPlayerAction('craft_pill', { recipeId, currentTemp });
+    return ok
+      ? { success: true, message: 'El caldero ruge. El resultado depende de tu control de llama...' }
+      : { success: false, message: 'Desconectado del servidor.' };
   };
 
   const craftSecretTechnique = (tech: CustomSecretTechnique) => {
@@ -541,86 +547,85 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!cultivator || cultivator.spiritStones < 100) return;
     const names = ['Li Chen', 'Meng Hao', 'Xiao Yan', 'Yun Che', 'Tang San', 'Ye Fan'];
     const newName = names[Math.floor(Math.random() * names.length)];
-    const newDisciple: Disciple = { id: `disciple_${Date.now()}`, name: newName, realm: 'Condensación de Qi', aptitude: Math.random() > 0.6 ? 'Genio Celestial' : 'Notable', loyalty: 80, assignedTask: 'herb_gathering', taskProgress: 10, taskDurationSeconds: 60, tributeYield: { spiritStones: 50, merits: 20, materials: 'Hierba' } };
-    setCultivator(prev => prev ? { ...prev, spiritStones: prev.spiritStones - 100, disciples: [...prev.disciples, newDisciple], stats: { ...prev.stats, disciplesRecruited: (prev.stats?.disciplesRecruited || 0) + 1 } } : null);
+    const newDisciple: Disciple = {
+      id: `disciple_${Date.now()}`,
+      name: newName,
+      realm: 'Condensación de Qi',
+      aptitude: Math.random() > 0.6 ? 'Genio Celestial' : 'Notable',
+      loyalty: 80,
+      assignedTask: 'herb_gathering',
+      taskProgress: 10,
+      taskDurationSeconds: 60,
+      tributeYield: { spiritStones: 50, merits: 20, materials: 'Hierba' },
+    };
+    setCultivator(prev => prev ? {
+      ...prev,
+      spiritStones: prev.spiritStones - 100,
+      disciples: [...prev.disciples, newDisciple],
+      stats: { ...prev.stats, disciplesRecruited: (prev.stats?.disciplesRecruited || 0) + 1 },
+    } : null);
   };
-  
-  const assignDiscipleTask = (discipleId: string, task: Disciple['assignedTask']) => setCultivator(prev => prev ? { ...prev, disciples: prev.disciples.map(d => d.id === discipleId ? { ...d, assignedTask: task, taskProgress: 0 } : d) } : null);
+
+  const assignDiscipleTask = (discipleId: string, task: Disciple['assignedTask']) =>
+    setCultivator(prev => prev ? { ...prev, disciples: prev.disciples.map(d => d.id === discipleId ? { ...d, assignedTask: task, taskProgress: 0 } : d) } : null);
+
   const claimDiscipleTribute = (discipleId: string) => {
     if (!cultivator) return;
     const disciple = cultivator.disciples.find(d => d.id === discipleId);
     if (!disciple || disciple.taskProgress < 100) return;
     murimAudio.playQiChime();
-    setCultivator(prev => prev ? { ...prev, spiritStones: prev.spiritStones + disciple.tributeYield.spiritStones, sectMerits: prev.sectMerits + disciple.tributeYield.merits, disciples: prev.disciples.map(d => d.id === discipleId ? { ...d, taskProgress: 0 } : d) } : null);
+    setCultivator(prev => prev ? {
+      ...prev,
+      spiritStones: prev.spiritStones + disciple.tributeYield.spiritStones,
+      sectMerits: prev.sectMerits + disciple.tributeYield.merits,
+      disciples: prev.disciples.map(d => d.id === discipleId ? { ...d, taskProgress: 0 } : d),
+    } : null);
   };
-  const joinSect = (sectId: string) => setCultivator(prev => prev ? { ...prev, sectId, sectRank: 'Discípulo Externo', sectMerits: 0 } : null);
+
+  const joinSect = (sectId: string) =>
+    setCultivator(prev => prev ? { ...prev, sectId, sectRank: 'Discípulo Externo', sectMerits: 0 } : null);
+
   const contributeSect = (amount: number) => {
     if (!cultivator || cultivator.spiritStones < amount) return;
     murimAudio.playCoinClink();
-
     setCultivator(prev => {
       if (!prev) return null;
-      
       const newMerits = prev.sectMerits + Math.floor(amount * 0.8);
       const newRank = calculateSectRank(newMerits);
-
-      // Si el rango cambió, mostramos un aviso
       if (newRank !== prev.sectRank) {
         setTimeout(() => {
           alert(`¡Felicidades! Has ascendido al rango de: ${newRank.toUpperCase()}`);
           murimAudio.playBreakthroughGong();
         }, 100);
       }
-
-      return {
-        ...prev,
-        spiritStones: prev.spiritStones - amount,
-        sectMerits: newMerits,
-        sectRank: newRank, // <--- AQUÍ SE ACTUALIZA EL RANGO
-      };
+      return { ...prev, spiritStones: prev.spiritStones - amount, sectMerits: newMerits, sectRank: newRank };
     });
   };
+
   const buyItem = (item: Item, price: number) => {
     if (!cultivator) return;
-    if (cultivator.spiritStones < price) {
-      alert('No tienes suficientes Piedras Espirituales.');
-      return;
-    }
-    if (cultivator.inventory.length >= cultivator.inventoryMaxSlots) {
-      alert('Tu inventario está lleno.');
-      return;
-    }
-
+    if (cultivator.spiritStones < price) { alert('No tienes suficientes Piedras Espirituales.'); return; }
+    if (cultivator.inventory.length >= cultivator.inventoryMaxSlots) { alert('Tu inventario está lleno.'); return; }
     murimAudio.playCoinClink();
-    
-    setCultivator(prev => {
-      if (!prev) return null;
-      return {
-        ...prev,
-        spiritStones: prev.spiritStones - price,
-        inventory: [...prev.inventory, { ...item, id: `${item.id}_${Date.now()}` }],
-      };
-    });
-    // Aquí idealmente enviarías la transacción al servidor
-    // sendPlayerAction('buy_item', { item, price });
+    setCultivator(prev => prev ? {
+      ...prev,
+      spiritStones: prev.spiritStones - price,
+      inventory: [...prev.inventory, { ...item, id: `${item.id}_${Date.now()}` }],
+    } : null);
   };
 
   const sellItem = (itemId: string, price: number) => {
     if (!cultivator) return;
     const itemToSell = cultivator.inventory.find(i => i.id === itemId);
     if (!itemToSell) return;
-
     murimAudio.playCoinClink();
-
-    setCultivator(prev => {
-      if (!prev) return null;
-      return {
-        ...prev,
-        spiritStones: prev.spiritStones + price,
-        inventory: prev.inventory.filter(i => i.id !== itemId),
-      };
-    });
+    setCultivator(prev => prev ? {
+      ...prev,
+      spiritStones: prev.spiritStones + price,
+      inventory: prev.inventory.filter(i => i.id !== itemId),
+    } : null);
   };
+
   const placeBid = (auctionId: string, amount: number) => {
     if (!cultivator) return;
     const auction = auctionListings.find(a => a.id === auctionId);
@@ -628,55 +633,90 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const isMerit = auction.currencyType === 'merits';
     if (isMerit && cultivator.sectMerits < amount) return;
     if (!isMerit && cultivator.spiritStones < amount) return;
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify({ type: 'auction_bid', payload: { auctionId, amount } }));
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'auction_bid', payload: { auctionId, amount } }));
+    }
   };
+
   const buyoutAuction = (auctionId: string) => {
     if (!cultivator) return;
     const auction = auctionListings.find(a => a.id === auctionId);
     if (!auction) return;
     const isMerit = auction.currencyType === 'merits';
     if (isMerit ? cultivator.sectMerits < auction.buyoutPrice : cultivator.spiritStones < auction.buyoutPrice) return;
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify({ type: 'auction_buyout', payload: { auctionId } }));
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'auction_buyout', payload: { auctionId } }));
+    }
   };
+
   const createAuctionListing = (item: Item, startBid: number, buyout: number, currencyType: 'stones' | 'merits' = 'stones') => {
     if (!cultivator) return;
     setCultivator(prev => prev ? { ...prev, inventory: prev.inventory.filter(i => i.id !== item.id) } : null);
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify({ type: 'auction_create_listing', payload: { item, startingBid: startBid, buyoutPrice: buyout, currencyType } }));
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'auction_create_listing', payload: { item, startingBid: startBid, buyoutPrice: buyout, currencyType } }));
+    }
   };
+
   const claimMilestone = (milestoneId: string) => {
     const milestone = MERIT_MILESTONES.find(m => m.id === milestoneId);
     if (!milestone || !cultivator || cultivator.claimedAchievements?.includes(milestoneId)) return;
     murimAudio.playBreakthroughGong();
-    setCultivator(prev => prev ? { ...prev, sectMerits: prev.sectMerits + milestone.meritReward, spiritStones: prev.spiritStones + milestone.stoneReward, claimedAchievements: [...(prev.claimedAchievements || []), milestoneId] } : null);
+    setCultivator(prev => prev ? {
+      ...prev,
+      sectMerits: prev.sectMerits + milestone.meritReward,
+      spiritStones: prev.spiritStones + milestone.stoneReward,
+      claimedAchievements: [...(prev.claimedAchievements || []), milestoneId],
+    } : null);
   };
+
   const attackWorldBoss = () => {
     if (!cultivator) return;
     murimAudio.playElementalBlast(cultivator.classType === 'warrior' ? 'Fuego' : 'Rayo');
-    const totalDamage = Math.floor(cultivator.baseAttack * 2.5 + cultivator.spiritPower * 1.8 + Math.random() * 50);
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify({ type: 'world_boss_attack', payload: { damage: totalDamage } }));
-    setCultivator(prev => prev ? { ...prev, stats: { ...prev.stats, bossDamageDealt: prev.stats.bossDamageDealt + totalDamage } } : null);
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'world_boss_attack', payload: {} }));
+    }
   };
+
   const sendChatMessage = (text: string, channel: 'global' | 'sect' = 'global') => {
     if (!text.trim() || !cultivator) return;
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify({ type: 'chat_message', payload: { text, channel } }));
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'chat_message', payload: { text, channel } }));
+    }
   };
-  const challengePlayer = (playerId: string) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify({ type: 'duel_invite', payload: { targetPlayerId: playerId } }));
+
+  const challengePlayer = (targetPlayerId: string) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'duel_invite', payload: { targetPlayerId } }));
+    }
   };
+
   const acceptDuel = () => {
     if (!pendingDuelInvite || !cultivator) return;
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify({ type: 'duel_accept', payload: { challengerId: pendingDuelInvite.challengerId, accepterHp: cultivator.hp } }));
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'duel_accept', payload: { challengerId: pendingDuelInvite.challengerId } }));
+    }
   };
+
   const declineDuel = () => setPendingDuelInvite(null);
+
   const performDuelAction = (actionType: 'basic' | 'technique' | 'secret' | 'defend', techName?: string) => {
     if (!activeDuel || !cultivator) return;
     if (actionType === 'basic') murimAudio.playSwordClash();
     else if (actionType === 'defend') murimAudio.playQiChime();
     else murimAudio.playElementalBlast();
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify({ type: 'duel_action', payload: { duelId: activeDuel.id, actionType, techName } }));
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'duel_action', payload: { duelId: activeDuel.id, actionType, techName } }));
+    }
   };
+
   const closeDuelSummary = () => setActiveDuel(null);
-  const toggleAudio = () => { const isMuted = murimAudio.toggleMute(); setIsAudioMuted(isMuted); return isMuted; };
+
+  const toggleAudio = () => {
+    const isMuted = murimAudio.toggleMute();
+    setIsAudioMuted(isMuted);
+    return isMuted;
+  };
+
   const dismantleTechnique = (scrollId: string) => {
     if (!cultivator) return { success: false, insight: 'Cultivador no disponible.' };
     const scroll = cultivator.libraryScrolls.find(s => s.id === scrollId);
@@ -684,30 +724,61 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if ((cultivator.attributes?.inteligencia || 15) < 18 && (cultivator.attributes?.sabiduria || 15) < 20) return { success: false, insight: 'Requiere INT ≥ 18 o SAB ≥ 20.' };
     if (cultivator.qi < 50) return { success: false, insight: 'Qi insuficiente (requiere 50 Qi).' };
     murimAudio.playQiChime();
-    const insights = [`[Bundle Theory] Estructura de «${scroll.title}» descifrada. Debilidad revelada.`, `[Bundle Theory] Matriz kármica analizada.`, `[Bundle Theory] Nodos de ignición expuestos.`];
+    const insights = [
+      `[Bundle Theory] Estructura de «${scroll.title}» descifrada. Debilidad revelada.`,
+      `[Bundle Theory] Matriz kármica analizada.`,
+      `[Bundle Theory] Nodos de ignición expuestos.`,
+    ];
     const insightText = insights[Math.floor(Math.random() * insights.length)];
-    setCultivator(prev => prev ? { ...prev, qi: Math.max(0, prev.qi - 50), libraryScrolls: prev.libraryScrolls.map(s => s.id === scrollId ? { ...s, studyProgress: Math.min(100, s.studyProgress + 40), isMastered: (s.studyProgress + 40) >= 100 } : s) } : null);
+    setCultivator(prev => prev ? {
+      ...prev,
+      qi: Math.max(0, prev.qi - 50),
+      libraryScrolls: prev.libraryScrolls.map(s => s.id === scrollId ? { ...s, studyProgress: Math.min(100, s.studyProgress + 40), isMastered: (s.studyProgress + 40) >= 100 } : s),
+    } : null);
     return { success: true, insight: insightText };
   };
+
   const claimSectStipend = () => {
     if (!cultivator) return { success: false, message: 'Cultivador no disponible.' };
-    const rankPrizes: any = { 'Discípulo Externo': { stones: 80, merits: 30 }, 'Discípulo Interno': { stones: 200, merits: 80, pillName: 'Píldora Purificadora de Qi' }, 'Discípulo Élite': { stones: 450, merits: 180, pillName: 'Píldora de Concentración Espiritual' }, 'Anciano de Pabellón': { stones: 1000, merits: 400, pillName: 'Píldora del Corazón' }, 'Gran Maestro': { stones: 2500, merits: 1000, pillName: 'Píldora del Corazón' }, 'Líder Supremo / Patriarca': { stones: 5000, merits: 2500, pillName: 'Píldora del Corazón' } };
+    const rankPrizes: any = {
+      'Discípulo Externo': { stones: 80, merits: 30 },
+      'Discípulo Interno': { stones: 200, merits: 80, pillName: 'Píldora Purificadora de Qi' },
+      'Discípulo Élite': { stones: 450, merits: 180, pillName: 'Píldora de Concentración Espiritual' },
+      'Anciano de Pabellón': { stones: 1000, merits: 400, pillName: 'Píldora del Corazón' },
+      'Gran Maestro': { stones: 2500, merits: 1000, pillName: 'Píldora del Corazón' },
+      'Líder Supremo / Patriarca': { stones: 5000, merits: 2500, pillName: 'Píldora del Corazón' },
+    };
     const prize = rankPrizes[cultivator.sectRank] || rankPrizes['Discípulo Externo'];
     murimAudio.playCoinClink();
     setCultivator(prev => {
       if (!prev) return null;
       const newItems = [...prev.inventory];
-      if (prize.pillName) newItems.push({ id: `stipend_pill_${Date.now()}`, name: prize.pillName, category: 'pill', rarity: 'Alma', description: 'Píldora mensual.', cultivationBoost: 200, value: 120 });
-      return { ...prev, spiritStones: prev.spiritStones + prize.stones, sectMerits: prev.sectMerits + prize.merits, currency: { ...prev.currency, stonesLow: (prev.currency?.stonesLow || 0) + prize.stones }, inventory: newItems };
+      if (prize.pillName) {
+        newItems.push({ id: `stipend_pill_${Date.now()}`, name: prize.pillName, category: 'pill', rarity: 'Alma', description: 'Píldora mensual.', cultivationBoost: 200, value: 120 });
+      }
+      return {
+        ...prev,
+        spiritStones: prev.spiritStones + prize.stones,
+        sectMerits: prev.sectMerits + prize.merits,
+        currency: { ...prev.currency, stonesLow: (prev.currency?.stonesLow || 0) + prize.stones },
+        inventory: newItems,
+      };
     });
     return { success: true, message: `Has recibido el estipendio mensual: +${prize.stones} Piedras, +${prize.merits} Méritos.` };
   };
+
   const requestPatriarchGuidance = () => {
     if (!cultivator) return { success: false, message: 'Cultivador no disponible.' };
     murimAudio.playBreakthroughGong();
-    setCultivator(prev => prev ? { ...prev, qi: prev.maxQi, dantianPurity: Math.min(100, prev.dantianPurity + 15), freeAttributePoints: (prev.freeAttributePoints || 0) + 2 } : null);
+    setCultivator(prev => prev ? {
+      ...prev,
+      qi: prev.maxQi,
+      dantianPurity: Math.min(100, prev.dantianPurity + 15),
+      freeAttributePoints: (prev.freeAttributePoints || 0) + 2,
+    } : null);
     return { success: true, message: `El Patriarca te ha bendecido. Qi restablecido, +15% Pureza, +2 Puntos.` };
   };
+
   const receiveMedicinalTreatment = (treatmentType: 'herb_bath' | 'acupuncture' | 'restore_soul') => {
     if (!cultivator) return { success: false, message: 'Cultivador no disponible.' };
     murimAudio.playQiChime();
@@ -722,29 +793,44 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: true, message: 'Recomposición del Alma concluida.' };
     }
   };
+
   const harvestSectGarden = () => {
     if (!cultivator) return { success: false, message: 'Cultivador no disponible.' };
-    const herbs = [{ name: 'Hierba de Sangre de Dragón', desc: 'Planta escarlata.', rarity: 'Tierra' as const }, { name: 'Loto de Nieve', desc: 'Flor medicinal.', rarity: 'Alma' as const }, { name: 'Ginseng de Nueve Nudos', desc: 'Tubérculo celestial.', rarity: 'Celestial' as const }];
+    const herbs = [
+      { name: 'Hierba de Sangre de Dragón', desc: 'Planta escarlata.', rarity: 'Tierra' as const },
+      { name: 'Loto de Nieve', desc: 'Flor medicinal.', rarity: 'Alma' as const },
+      { name: 'Ginseng de Nueve Nudos', desc: 'Tubérculo celestial.', rarity: 'Celestial' as const },
+    ];
     const picked = herbs[Math.floor(Math.random() * herbs.length)];
-    const newItem: Item = { id: `herb_garden_${Date.now()}`, name: picked.name, category: 'material', rarity: picked.rarity, description: picked.desc, value: picked.rarity === 'Celestial' ? 180 : picked.rarity === 'Alma' ? 80 : 35 };
+    const newItem: Item = {
+      id: `herb_garden_${Date.now()}`,
+      name: picked.name,
+      category: 'material',
+      rarity: picked.rarity,
+      description: picked.desc,
+      value: picked.rarity === 'Celestial' ? 180 : picked.rarity === 'Alma' ? 80 : 35,
+    };
     murimAudio.playQiChime();
     setCultivator(prev => prev ? { ...prev, inventory: [...prev.inventory, newItem] } : null);
     return { success: true, message: `Has cosechado «${picked.name}».`, herb: newItem };
   };
+
   const buySectStoreItem = (item: Item, meritCost: number) => {
     if (!cultivator) return { success: false, message: 'Cultivador no disponible.' };
     if (cultivator.sectMerits < meritCost) return { success: false, message: `Méritos insuficientes.` };
     murimAudio.playCoinClink();
-    setCultivator(prev => prev ? { ...prev, sectMerits: prev.sectMerits - meritCost, inventory: [...prev.inventory, { ...item, id: `bought_${Date.now()}` }] } : null);
+    setCultivator(prev => prev ? {
+      ...prev,
+      sectMerits: prev.sectMerits - meritCost,
+      inventory: [...prev.inventory, { ...item, id: `bought_${Date.now()}` }],
+    } : null);
     return { success: true, message: `¡Has adquirido «${item.name}»!` };
   };
 
-  // VIAJAR ENTRE REGIONES CORREGIDO
   const travelToNode = (nodeId: string) => {
     if (!cultivator) return { success: false, message: 'Cultivador no disponible.' };
     const region = MAP_REGIONS.find(r => r.id === nodeId);
     if (!region) return { success: false, message: 'Región desconocida.' };
-    
     murimAudio.playQiChime();
     setCultivator(prev => {
       if (!prev) return null;
@@ -765,35 +851,55 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const totalRoll = Math.floor(Math.random() * 100) + 1 + Math.floor((cultivator.attributes?.suerte || 10) / 2);
     let eventText = '', rewardText = '', loot: Item | undefined;
     if (totalRoll <= 20) { eventText = 'Sin eventos.'; rewardText = 'Nula.'; }
-    else if (totalRoll <= 40) { eventText = 'Giro cotidiano.'; rewardText = '+40 Cobre.'; loot = { id: `loot_${Date.now()}`, name: 'Píldora de Qi', category: 'pill', rarity: 'Mortal', description: 'Píldora básica.', cultivationBoost: 80, value: 30 }; }
-    else if (totalRoll <= 60) { eventText = 'Hallazgo menor.'; rewardText = '+65 Piedras.'; loot = { id: `loot_${Date.now()}`, name: 'Hierro Frío', category: 'material', rarity: 'Tierra', description: 'Mineral.', value: 90 }; }
-    else if (totalRoll <= 80) { eventText = 'Oportunidad.'; rewardText = '+180 Piedras.'; loot = { id: `loot_${Date.now()}`, name: 'Píldora de Médula', category: 'pill', rarity: 'Alma', description: 'Píldora rara.', cultivationBoost: 300, value: 250 }; }
-    else if (totalRoll <= 95) { eventText = 'Coyuntura.'; rewardText = '+350 Piedras.'; loot = { id: `loot_${Date.now()}`, name: 'Brújula Bagua', category: 'artifact', rarity: 'Alma', description: 'Brújula.', statBonus: { spirit: 35 }, value: 400 }; }
-    else { eventText = '¡Intervención del Dao!'; rewardText = '+800 Piedras.'; loot = { id: `loot_${Date.now()}`, name: 'Sello Celestial', category: 'artifact', rarity: 'Celestial', description: 'Reliquia.', statBonus: { spirit: 80 }, value: 1200 }; }
+    else if (totalRoll <= 40) {
+      eventText = 'Giro cotidiano.'; rewardText = '+40 Cobre.';
+      loot = { id: `loot_${Date.now()}`, name: 'Píldora de Qi', category: 'pill', rarity: 'Mortal', description: 'Píldora básica.', cultivationBoost: 80, value: 30 };
+    } else if (totalRoll <= 60) {
+      eventText = 'Hallazgo menor.'; rewardText = '+65 Piedras.';
+      loot = { id: `loot_${Date.now()}`, name: 'Hierro Frío', category: 'material', rarity: 'Tierra', description: 'Mineral.', value: 90 };
+    } else if (totalRoll <= 80) {
+      eventText = 'Oportunidad.'; rewardText = '+180 Piedras.';
+      loot = { id: `loot_${Date.now()}`, name: 'Píldora de Médula', category: 'pill', rarity: 'Alma', description: 'Píldora rara.', cultivationBoost: 300, value: 250 };
+    } else if (totalRoll <= 95) {
+      eventText = 'Coyuntura.'; rewardText = '+350 Piedras.';
+      loot = { id: `loot_${Date.now()}`, name: 'Brújula Bagua', category: 'artifact', rarity: 'Alma', description: 'Brújula.', statBonus: { spirit: 35 }, value: 400 };
+    } else {
+      eventText = '¡Intervención del Dao!'; rewardText = '+800 Piedras.';
+      loot = { id: `loot_${Date.now()}`, name: 'Sello Celestial', category: 'artifact', rarity: 'Celestial', description: 'Reliquia.', statBonus: { spirit: 80 }, value: 1200 };
+    }
     murimAudio.playBreakthroughGong();
-    setCultivator(prev => prev ? { ...prev, spiritStones: prev.spiritStones + (totalRoll > 95 ? 800 : totalRoll > 80 ? 350 : totalRoll > 60 ? 180 : totalRoll > 40 ? 65 : 20), sectMerits: prev.sectMerits + (totalRoll > 95 ? 50 : 15), inventory: loot ? [...prev.inventory, loot] : prev.inventory } : null);
+    setCultivator(prev => prev ? {
+      ...prev,
+      spiritStones: prev.spiritStones + (totalRoll > 95 ? 800 : totalRoll > 80 ? 350 : totalRoll > 60 ? 180 : totalRoll > 40 ? 65 : 20),
+      sectMerits: prev.sectMerits + (totalRoll > 95 ? 50 : 15),
+      inventory: loot ? [...prev.inventory, loot] : prev.inventory,
+    } : null);
     return { roll: totalRoll, eventText, rewardText, loot };
   };
 
   const huntBeastEncounter = (beastId: string) => {
     if (!cultivator) return { victory: false, log: 'Cultivador no disponible.' };
-    // CORREGIDO: Usa WORLD_BEASTS en lugar de BESTIAS_COMPENDIO
     const beast = WORLD_BEASTS.find(b => b.id === beastId) || WORLD_BEASTS[0];
     if (!beast) return { victory: false, log: 'Bestia no encontrada.' };
-    
+
     const victory = ((cultivator.baseAttack || 30) + (cultivator.spiritPower || 20)) >= ((beast.attack * 1.2) + (beast.hp * 0.1)) * 0.65 || Math.random() > 0.45;
     if (victory) {
       murimAudio.playSwordClash();
-      // Simulamos un drop basado en el material clave
-      const drop: Item = { 
-        id: `drop_${Date.now()}`, 
-        name: beast.keyMaterial, 
-        category: 'material', 
-        rarity: 'Alma', 
-        description: `Material extraído de ${beast.name}.`, 
-        value: beast.level * 50 
+      const drop: Item = {
+        id: `drop_${Date.now()}`,
+        name: beast.keyMaterial,
+        category: 'material',
+        rarity: 'Alma',
+        description: `Material extraído de ${beast.name}.`,
+        value: beast.level * 50,
       };
-      setCultivator(prev => prev ? { ...prev, spiritStones: prev.spiritStones + (beast.level * 10), sectMerits: prev.sectMerits + Math.floor(beast.level * 2), inventory: [...prev.inventory, drop], stats: { ...prev.stats, bossDamageDealt: (prev.stats?.bossDamageDealt || 0) + beast.hp } } : null);
+      setCultivator(prev => prev ? {
+        ...prev,
+        spiritStones: prev.spiritStones + (beast.level * 10),
+        sectMerits: prev.sectMerits + Math.floor(beast.level * 2),
+        inventory: [...prev.inventory, drop],
+        stats: { ...prev.stats, bossDamageDealt: (prev.stats?.bossDamageDealt || 0) + beast.hp },
+      } : null);
       return { victory: true, log: `¡Victoria frente a «${beast.name}»! Recompensas: +${beast.level * 10} Piedras, material [${drop.name}].`, dropItem: drop };
     } else {
       murimAudio.playElementalBlast();
@@ -805,10 +911,68 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
   return (
     <GameContext.Provider
       value={{
-        cultivator, onlinePlayers, auctionListings, worldBoss, sects, chatMessages, activeDuel, pendingDuelInvite, missions, isConnected,
-        createCharacter: () => {}, 
+        cultivator,
+        onlinePlayers,
+        auctionListings,
+        worldBoss,
+        sects,
+        chatMessages,
+        activeDuel,
+        pendingDuelInvite,
+        missions,
+        isConnected,
+        token,
+        playerId,
+        authError,
+        authLoading,
+        login,
+        register,
+        logout,
+        createCharacter: () => {},
         createSyntacticCharacter,
-        loadSavedCharacter, collectDungeonLoot, resetCharacter, buyItem, sellItem, meditate, unlockMeridian, attemptBreakthrough, craftPill, consumePill, equipGear, craftSecretTechnique, acceptMission, claimMission, recruitDisciple, assignDiscipleTask, claimDiscipleTribute, joinSect, contributeSect, placeBid, buyoutAuction, createAuctionListing, claimMilestone, attackWorldBoss, sendChatMessage, challengePlayer, acceptDuel, declineDuel, performDuelAction, closeDuelSummary, toggleAudio, isAudioMuted, allocateAttributePoint, studyLibraryScroll, dismantleTechnique, claimSectStipend, requestPatriarchGuidance, receiveMedicinalTreatment, harvestSectGarden, buySectStoreItem, travelToNode, exploreNodeEvent, huntBeastEncounter,
+        loadSavedCharacter,
+        collectDungeonLoot,
+        resetCharacter,
+        buyItem,
+        sellItem,
+        meditate,
+        unlockMeridian,
+        attemptBreakthrough,
+        craftPill,
+        consumePill,
+        equipGear,
+        craftSecretTechnique,
+        acceptMission,
+        claimMission,
+        recruitDisciple,
+        assignDiscipleTask,
+        claimDiscipleTribute,
+        joinSect,
+        contributeSect,
+        placeBid,
+        buyoutAuction,
+        createAuctionListing,
+        claimMilestone,
+        attackWorldBoss,
+        sendChatMessage,
+        challengePlayer,
+        acceptDuel,
+        declineDuel,
+        performDuelAction,
+        closeDuelSummary,
+        toggleAudio,
+        isAudioMuted,
+        allocateAttributePoint,
+        studyLibraryScroll,
+        dismantleTechnique,
+        claimSectStipend,
+        requestPatriarchGuidance,
+        receiveMedicinalTreatment,
+        harvestSectGarden,
+        buySectStoreItem,
+        travelToNode,
+        exploreNodeEvent,
+        huntBeastEncounter,
       }}
     >
       {children}

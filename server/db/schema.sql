@@ -160,3 +160,11 @@ CREATE INDEX IF NOT EXISTS idx_events_tick   ON world_events(tick);
 CREATE INDEX IF NOT EXISTS idx_events_type   ON world_events(type);
 CREATE INDEX IF NOT EXISTS idx_events_actor  ON world_events(actor_id);
 CREATE INDEX IF NOT EXISTS idx_events_created ON world_events(created_at);
+
+
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
