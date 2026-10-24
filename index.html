@@ -1,21 +1,101 @@
 <!doctype html>
-<html lang="en">
+<html lang="es" class="dark">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Murim: Sendas Inmortales</title>
-    <meta name="description" content="Juego multijugador en tiempo real de artes marciales y cultivación de sectas Murim, con economía de subastas, alquimia, dantian y combate estratégico." />
-    <meta property="og:title" content="Murim: Sendas Inmortales" />
-    <meta property="og:description" content="Juego multijugador en tiempo real de artes marciales y cultivación de sectas Murim, con economía de subastas, alquimia, dantian y combate estratégico." />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Murim: Sendas Inmortales | Xianxia RPG Online</title>
+    
+    <!-- Meta SEO & Open Graph -->
+    <meta name="description" content="Juego RPG multijugador en tiempo real de artes marciales y cultivación de sectas Murim. Domina el Qi, asciende reinos del Dantian, combate en el Jianghu y comercia en subastas." />
+    <meta name="theme-color" content="#07090e" />
+    <meta name="color-scheme" content="dark" />
+    <meta property="og:title" content="Murim: Sendas Inmortales | Xianxia RPG" />
+    <meta property="og:description" content="Explora el Jianghu, cultiva el Dantian, forja píldoras alquímicas y asciende hacia la inmortalidad marcial." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+
+    <!-- Favicon SVG Daoist Trigram -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%230a0d14' stroke='%23f59e0b' stroke-width='4'/><circle cx='50' cy='30' r='8' fill='%23f59e0b'/><circle cx='50' cy='70' r='8' fill='%2338bdf8'/><path d='M50 4 A46 46 0 0 0 50 96 A23 23 0 0 1 50 50 A23 23 0 0 0 50 4 Z' fill='%23f59e0b' opacity='0.25'/><text x='50' y='57' font-family='serif' font-size='24' font-weight='bold' fill='%23fbbf24' text-anchor='middle'>道</text></svg>" />
+
+    <!-- Google Fonts Preconnect & Xianxia Typography -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;900&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700;800;900&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=Noto+Serif+SC:wght@600;900&display=swap" rel="stylesheet">
+
+    <style>
+      /* Pre-react graceful loader */
+      #preloader {
+        position: fixed;
+        inset: 0;
+        background: #06080d;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 99999;
+        transition: opacity 0.4s ease-out;
+      }
+      .dao-ring {
+        width: 68px;
+        height: 68px;
+        border: 2px solid rgba(245, 158, 11, 0.15);
+        border-top-color: #f59e0b;
+        border-bottom-color: #38bdf8;
+        border-radius: 50%;
+        animation: spin 1.8s cubic-bezier(0.55, 0.15, 0.45, 0.85) infinite;
+        position: relative;
+      }
+      .dao-core {
+        position: absolute;
+        inset: 12px;
+        border: 1px dashed rgba(245, 158, 11, 0.4);
+        border-radius: 50%;
+        animation: spin-rev 3s linear infinite;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #f59e0b;
+        font-family: 'Cinzel', serif;
+        font-weight: 700;
+        font-size: 18px;
+      }
+      @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+      @keyframes spin-rev {
+        0% { transform: rotate(360deg); }
+        100% { transform: rotate(0deg); }
+      }
+    </style>
   </head>
-  <body>
+  <body class="bg-[#06080d] text-stone-200 antialiased selection:bg-amber-500/30 selection:text-amber-200">
+    <div id="preloader">
+      <div class="dao-ring">
+        <div class="dao-core">道</div>
+      </div>
+      <p style="margin-top: 18px; font-family: 'Cinzel', serif; font-size: 13px; letter-spacing: 0.25em; color: #d97706; text-transform: uppercase;">
+        Reuniendo el Qi del Cosmos...
+      </p>
+    </div>
+
     <div id="root"></div>
+
+    <script>
+      // Gracefully fade preloader once React mounts
+      window.addEventListener('DOMContentLoaded', () => {
+        const check = setInterval(() => {
+          if (document.querySelector('#root > *')) {
+            const el = document.getElementById('preloader');
+            if (el) {
+              el.style.opacity = '0';
+              setTimeout(() => el.remove(), 400);
+            }
+            clearInterval(check);
+          }
+        }, 50);
+      });
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

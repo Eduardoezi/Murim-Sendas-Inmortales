@@ -645,3 +645,11 @@ Apariencia: []
  - Heterodoxo
  - Demoniaco
 * Historia y Trama [Descripcion]
+ - Errante
+ - Discipulo Externo
+ - Hijo de Clan noble o culto
+ - Hijo de realeza ortodoxo o realiza de culto
+ - Noble Presentando prueba en secta como discipulo interno
+ - mercader
+ - forjador
+ - erudito

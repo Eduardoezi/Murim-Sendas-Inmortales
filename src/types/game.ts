@@ -104,6 +104,33 @@ export interface CustomSecretTechnique {
   level: number;
 }
 
+export interface BaZi {
+  year: string;
+  month: string;
+  day: string;
+  hour: string;
+  dominantElement: ElementType;
+}
+
+export interface Physique {
+  id: string;
+  name: string;
+  description: string;
+  bonus: string;
+}
+
+export interface Providence {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface SoulData {
+  scars: string[];
+  oaths: string[];
+  guardian?: string;
+}
+
 export interface Item {
   id: string;
   name: string;
@@ -273,6 +300,7 @@ export interface Cultivator {
   maxQi: number;
   hp: number;
   maxHp: number;
+  activeMissions?: ActiveMission[];
   
   // Atributos Fundamentales del Lore (Módulo 2 & 5)
   attributes: {
@@ -288,6 +316,15 @@ export interface Cultivator {
     sabiduria: number;
   };
   
+ 
+  bazi?: BaZi;
+  physiques?: Physique[];
+  providences?: Providence[];
+  soul?: SoulData;
+  background?: string;
+  affinity?: 'Ortodoxo' | 'Heterodoxo' | 'Demoniaco';
+  lineage?: 'Noble' | 'Plebeyo';
+
   // Karma & Reputación
   karma: number; // -1000 a +1000 (Claro vs Oscuro)
   fama: number; // -1000 a +1000
@@ -313,6 +350,7 @@ export interface Cultivator {
   
   spiritStones: number;
   sectMerits: number;
+  reputation?: Record<string, number>;
   sectId: string;
   sectRank: SectRank;
   dantianPurity: number; // 0 to 100%
@@ -397,4 +435,18 @@ export interface LiveDuelState {
   combatLog: { text: string; type: 'p1' | 'p2' | 'system' }[];
   status: 'waiting' | 'in_progress' | 'finished';
   winnerId?: string;
+}
+
+export interface ActiveMission {
+  id: string;
+  factionId: string;
+  title: string;
+  description: string;
+  type: 'Caza' | 'Recolección' | 'Viaje' | 'Cultivo';
+  targetRegionId: string;
+  durationMinutes: number;
+  startedAt: number; // Timestamp
+  status: 'in_progress' | 'completed' | 'claimed';
+  rewardStones: number;
+  rewardReputation: number;
 }

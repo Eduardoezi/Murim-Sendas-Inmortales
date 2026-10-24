@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS players (
   inventory_json         TEXT,
   disciples_json         TEXT,
   currency_json          TEXT,
+  active_missions_json   TEXT,
+  reputation_json        TEXT,
   
   -- Snapshot completo del Cultivador para fidelidad total sin pérdida de campos
   profile_json           TEXT,

@@ -1,62 +1,56 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useGame } from '../context/GameContext';
-import { WORLD_MAP_NODES, BESTIAS_COMPENDIO, BeastCompendiumEntry } from '../data/gameData';
-import { WorldMapNode, Item } from '../types/game';
+import { MAP_REGIONS, WORLD_FACTIONS, WORLD_BEASTS, WORLD_RESOURCES, MapRegion, WorldBeast } from '../data/worldData';
+import { Item } from '../types/game';
 import {
-  Compass,
-  MapPin,
-  Shield,
-  Zap,
-  Sparkles,
-  Swords,
-  Flame,
-  Award,
-  ChevronRight,
-  AlertTriangle,
-  CheckCircle,
-  Eye,
-  Dice5,
-  X,
+  Compass, MapPin, Shield, Sparkles, Swords, AlertTriangle, 
+  CheckCircle, Dice5, Grid3X3, Leaf, Gem, Users, TrendingUp, Skull, Store
 } from 'lucide-react';
 
-export const WorldMapView: React.FC = () => {
+interface WorldMapViewProps {
+  onNavigateToCity?: () => void;
+}
+
+export const WorldMapView: React.FC<WorldMapViewProps> = ({ onNavigateToCity }) => {
   const { cultivator, travelToNode, exploreNodeEvent, huntBeastEncounter } = useGame();
 
-  const [selectedNodeId, setSelectedNodeId] = useState<string>(
-    cultivator?.currentLocationNodeId || 'node_kunlun_sect'
-  );
+  const initialRegionId = useMemo(() => {
+    if (!cultivator) return 'prov_shaanxi';
+    if (cultivator.currentLocationNodeId?.startsWith('prov_')) return cultivator.currentLocationNodeId;
+    return 'prov_shaanxi';
+  }, [cultivator]);
+
+  const [selectedRegionId, setSelectedRegionId] = useState<string>(initialRegionId);
   const [activeTab, setActiveTab] = useState<'overview' | 'explore' | 'bestiary'>('overview');
-  const [eventResult, setEventResult] = useState<{
-    roll: number;
-    eventText: string;
-    rewardText: string;
-    loot?: Item;
-  } | null>(null);
-  const [huntLog, setHuntLog] = useState<{
-    victory: boolean;
-    log: string;
-    dropItem?: Item;
-  } | null>(null);
-  const [selectedBeast, setSelectedBeast] = useState<BeastCompendiumEntry>(BESTIAS_COMPENDIO[0]);
+  const [showGrid, setShowGrid] = useState<boolean>(true);
+
+  const [eventResult, setEventResult] = useState<{ roll: number; eventText: string; rewardText: string; loot?: Item } | null>(null);
+  const [huntLog, setHuntLog] = useState<{ victory: boolean; log: string; dropItem?: Item } | null>(null);
+  const [selectedBeast, setSelectedBeast] = useState<WorldBeast | null>(null);
 
   if (!cultivator) return null;
 
-  const currentNode =
-    WORLD_MAP_NODES.find((n) => n.id === cultivator.currentLocationNodeId) || WORLD_MAP_NODES[0];
-  const selectedNode =
-    WORLD_MAP_NODES.find((n) => n.id === selectedNodeId) || currentNode;
+  const currentRegion = MAP_REGIONS.find(r => r.id === initialRegionId) || MAP_REGIONS[0];
+  const selectedRegion = MAP_REGIONS.find(r => r.id === selectedRegionId) || currentRegion;
+  const isHere = initialRegionId === selectedRegion.id;
 
-  const isHere = cultivator.currentLocationNodeId === selectedNode.id;
+  const localFactions = WORLD_FACTIONS.filter(f => f.location === selectedRegion.id);
+  const localBeasts = WORLD_BEASTS.filter(b => b.habitat === selectedRegion.id);
+  const localResources = WORLD_RESOURCES.filter(r => r.location === selectedRegion.id);
 
   const handleTravel = (nodeId: string) => {
-    travelToNode(nodeId);
-    setSelectedNodeId(nodeId);
-    setEventResult(null);
-    setHuntLog(null);
+    const res = travelToNode(nodeId);
+    if (res.success) {
+      setSelectedRegionId(nodeId);
+      setEventResult(null);
+      setHuntLog(null);
+    } else {
+      alert(res.message);
+    }
   };
 
   const handleExplore = () => {
-    const res = exploreNodeEvent(selectedNode.id);
+    const res = exploreNodeEvent(selectedRegion.id);
     setEventResult(res);
   };
 
@@ -70,405 +64,305 @@ export const WorldMapView: React.FC = () => {
       {/* Header Banner */}
       <div className="relative rounded-xl overflow-hidden border border-stone-800 bg-stone-900/80 min-h-[140px] flex items-end p-6">
         <div className="absolute inset-0 z-0">
-          <img
-            src="/src/assets/images/murim_world_map_1792521242321.jpg"
-            alt="Mapa del Jianghu"
-            className="w-full h-full object-cover opacity-35 brightness-75"
-          />
-          <div className="absolute inset-0 bg-gradient-to-t from-[#090b10] via-[#090b10]/60 to-transparent" />
+          <div className="absolute inset-0 bg-gradient-to-t from-[#090b10] via-[#090b10]/80 to-transparent z-10" />
         </div>
 
-        <div className="relative z-10 w-full flex flex-col md:flex-row md:items-end justify-between gap-4">
+        <div className="relative z-20 w-full flex flex-col md:flex-row md:items-end justify-between gap-4">
           <div>
             <div className="text-xs text-amber-400 font-cinzel mb-1 flex items-center gap-2">
               <Compass className="w-4 h-4 text-amber-400" />
-              <span>GEOGRAFÍA DEL JIANGHU & LAS NUEVE PROVINCIAS</span>
+              <span>MAPA POLÍTICO DEL JIANGHU</span>
               <span>·</span>
               <span>江湖武林乾坤圖</span>
             </div>
             <h2 className="font-cinzel text-3xl font-bold text-amber-100">
-              Mapa del Mundo Cultivador
+              Geografía del Mundo Cultivador
             </h2>
             <p className="text-xs text-stone-300 mt-1 max-w-xl">
-              Ubicación Actual:{' '}
-              <strong className="text-amber-200">{currentNode.name}</strong> ({currentNode.province}) · Densidad de Qi:{' '}
-              <span className="text-emerald-400 font-medium">{currentNode.qiDensity}</span>
+              Ubicación Actual: <strong className="text-amber-200">{currentRegion.name}</strong> · Densidad de Qi: <span className="text-emerald-400 font-medium">{currentRegion.qiDensity}</span>
             </p>
           </div>
 
-          <div className="flex items-center gap-4 text-xs text-stone-300 bg-stone-950/80 p-3 rounded-lg border border-stone-800">
-            <div>
-              <div className="text-[10px] text-stone-500 uppercase">Regiones Descubiertas</div>
-              <div className="font-mono font-bold text-amber-300 tabular-nums">
-                {cultivator.stats?.nodesDiscovered || 1} / {WORLD_MAP_NODES.length}
-              </div>
-            </div>
-            <div className="w-[1px] h-8 bg-stone-800" />
-            <div>
-              <div className="text-[10px] text-stone-500 uppercase">Sentido Espiritual</div>
-              <div className="font-mono font-bold text-emerald-400 tabular-nums">
-                {cultivator.spiritSense || 35} m
-              </div>
-            </div>
-            <div className="w-[1px] h-8 bg-stone-800" />
-            <div>
-              <div className="text-[10px] text-stone-500 uppercase">Suerte de Encuentro</div>
-              <div className="font-mono font-bold text-cyan-400 tabular-nums">
-                +{Math.floor((cultivator.attributes?.suerte || 10) / 2)}
-              </div>
-            </div>
-          </div>
+          <button
+            onClick={() => setShowGrid(!showGrid)}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg border text-xs font-semibold transition-colors ${showGrid ? 'bg-amber-900/40 border-amber-500/50 text-amber-300' : 'bg-stone-900 border-stone-700 text-stone-400'}`}
+          >
+            <Grid3X3 className="w-4 h-4" />
+            {showGrid ? 'Ocultar Cuadrícula' : 'Mostrar Cuadrícula'}
+          </button>
         </div>
       </div>
 
-      {/* Main Grid: Interactive Map + Regional Inspector */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left: Silk Scroll Interactive Map Visualizer */}
-        <div className="lg:col-span-8 bg-stone-900/70 border border-stone-800 rounded-xl overflow-hidden flex flex-col">
+        {/* MAPA INTERACTIVO */}
+        <div className="lg:col-span-8 bg-stone-900/70 border border-stone-800 rounded-xl overflow-hidden flex flex-col shadow-2xl">
           <div className="p-3 bg-stone-950/90 border-b border-stone-800 flex items-center justify-between text-xs text-stone-300">
             <span className="font-cinzel font-semibold text-amber-200 flex items-center gap-2">
               <MapPin className="w-3.5 h-3.5 text-amber-400" />
-              Carta de Seda Dinástica: Vetas de Qi & Asentamientos
+              Carta de Seda Dinástica
             </span>
-            <span className="text-[11px] text-stone-500">Haz clic en un enclave para inspeccionar o viajar</span>
+            <span className="text-[11px] text-stone-500">Selecciona una provincia para inspeccionar</span>
           </div>
 
-          {/* Interactive Map Canvas Container */}
-          <div className="relative w-full aspect-[16/9] bg-stone-950 overflow-hidden group select-none">
+          <div className="relative w-full aspect-[16/10] bg-stone-950 overflow-hidden select-none">
             <img
               src="/src/assets/images/murim_world_map_1792521242321.jpg"
-              alt="Silk Map"
-              className="w-full h-full object-cover filter contrast-[1.05] brightness-95"
+              alt="Mapa del Mundo"
+              className="absolute inset-0 w-full h-full object-cover opacity-80 filter sepia-[0.3] brightness-90"
             />
-            {/* Subtle ancient parchment vignette */}
-            <div className="absolute inset-0 bg-amber-950/10 pointer-events-none mix-blend-color" />
-            <div className="absolute inset-0 ring-1 ring-inset ring-amber-500/20 pointer-events-none" />
+            
+            {showGrid && (
+              <div className="absolute inset-0 z-0 pointer-events-none opacity-30"
+                style={{
+                  backgroundImage: `
+                    linear-gradient(to right, rgba(245, 158, 11, 0.4) 1px, transparent 1px),
+                    linear-gradient(to bottom, rgba(245, 158, 11, 0.4) 1px, transparent 1px)
+                  `,
+                  backgroundSize: '6.25% 14.28%',
+                  border: '1px solid rgba(245, 158, 11, 0.4)'
+                }}
+              />
+            )}
+            
+            <div className="absolute inset-0 bg-black/20 pointer-events-none z-10" />
 
-            {/* Map Node Pins */}
-            {WORLD_MAP_NODES.map((node) => {
-              const isPlayerHere = cultivator.currentLocationNodeId === node.id;
-              const isSelected = selectedNodeId === node.id;
+            {MAP_REGIONS.map((region) => {
+              const isPlayerHere = initialRegionId === region.id;
+              const isSelected = selectedRegionId === region.id;
 
               return (
                 <button
-                  key={node.id}
+                  key={region.id}
                   onClick={() => {
-                    setSelectedNodeId(node.id);
+                    setSelectedRegionId(region.id);
                     setEventResult(null);
                     setHuntLog(null);
+                    setSelectedBeast(null);
                   }}
-                  style={{
-                    left: `${node.coordinates.x}%`,
-                    top: `${node.coordinates.y}%`,
-                  }}
-                  className={`absolute -translate-x-1/2 -translate-y-1/2 group/pin z-20 cursor-pointer transition-all duration-200 ${
-                    isSelected ? 'scale-125 z-30' : 'hover:scale-115'
+                  style={{ left: `${region.coords.x}%`, top: `${region.coords.y}%` }}
+                  className={`absolute -translate-x-1/2 -translate-y-1/2 group z-20 transition-all duration-200 cursor-pointer ${
+                    isSelected ? 'scale-125 z-30' : 'hover:scale-110'
                   }`}
-                  title={`${node.name} (${node.province})`}
                 >
-                  {/* Outer pulsing ring for current player position */}
                   {isPlayerHere && (
-                    <div className="absolute -inset-2 rounded-full border border-emerald-400/80 animate-ping pointer-events-none" />
+                    <div className="absolute -inset-3 rounded-full border-2 border-emerald-400/80 animate-ping pointer-events-none" />
                   )}
-
+                  
                   <div
-                    className={`px-2 py-1 rounded-md text-[10px] font-cinzel font-bold border flex items-center gap-1.5 shadow-lg backdrop-blur-sm transition-colors ${
+                    className={`px-2 py-1 rounded shadow-xl border flex items-center gap-1.5 backdrop-blur-md transition-colors ${
                       isPlayerHere
                         ? 'bg-emerald-950/90 border-emerald-400 text-emerald-200'
                         : isSelected
-                        ? 'bg-amber-950/90 border-amber-400 text-amber-200'
-                        : 'bg-stone-950/80 border-stone-700 text-stone-300 hover:border-amber-400/80 hover:text-amber-100'
+                        ? 'bg-amber-600/90 border-amber-300 text-stone-950 font-bold'
+                        : 'bg-stone-900/80 border-stone-700 text-stone-300 hover:border-amber-400'
                     }`}
                   >
-                    <span
-                      className={`w-2 h-2 rounded-full shrink-0 ${
-                        isPlayerHere
-                          ? 'bg-emerald-400'
-                          : node.threatLevel >= 8
-                          ? 'bg-red-400'
-                          : node.threatLevel >= 6
-                          ? 'bg-amber-400'
-                          : 'bg-blue-400'
-                      }`}
-                    />
-                    <span className="hidden sm:inline whitespace-nowrap">{node.name.split('&')[0]}</span>
+                    <MapPin className={`w-3.5 h-3.5 ${isPlayerHere ? 'text-emerald-400' : isSelected ? 'text-stone-950' : 'text-amber-500'}`} />
+                    <span className="text-[10px] font-cinzel whitespace-nowrap">{region.name}</span>
                   </div>
 
-                  {/* Tooltip on hover */}
-                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/pin:flex flex-col bg-stone-950/95 border border-stone-700 text-stone-200 p-2 rounded shadow-2xl text-[10px] w-48 z-40 pointer-events-none">
-                    <span className="font-bold text-amber-300">{node.name}</span>
-                    <span className="text-stone-400">{node.province} · {node.chineseName}</span>
-                    <span className="text-emerald-400 mt-1">Qi: {node.qiDensity} · Peligro: {node.threatLevel}/10</span>
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:flex flex-col bg-stone-950/95 border border-stone-700 p-2 rounded shadow-2xl text-[10px] w-48 z-40 pointer-events-none">
+                    <span className="font-bold text-amber-300">{region.name} ({region.chineseName})</span>
+                    <span className="text-stone-400">Chunks: {region.chunks.join(', ')}</span>
+                    <span className="text-emerald-400 mt-1">Qi: {region.qiDensity}</span>
+                    <span className="text-rose-400">Amenaza: {region.threatLevel}/10</span>
                   </div>
                 </button>
               );
             })}
           </div>
-
-          {/* Quick Node Selector Pills */}
-          <div className="p-3 bg-stone-950/90 border-t border-stone-800 overflow-x-auto flex items-center gap-2 text-xs scrollbar-thin">
-            <span className="text-[11px] text-stone-500 font-cinzel shrink-0">Enclaves:</span>
-            {WORLD_MAP_NODES.map((node) => (
-              <button
-                key={node.id}
-                onClick={() => {
-                  setSelectedNodeId(node.id);
-                  setEventResult(null);
-                  setHuntLog(null);
-                }}
-                className={`px-2.5 py-1 rounded text-[11px] whitespace-nowrap transition-colors cursor-pointer ${
-                  selectedNodeId === node.id
-                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 font-semibold'
-                    : 'bg-stone-900 text-stone-400 hover:text-stone-200 border border-stone-800'
-                }`}
-              >
-                {node.name.split('&')[0]}
-              </button>
-            ))}
-          </div>
         </div>
 
-        {/* Right: Enclave Inspector & Actions Panel */}
+        {/* PANEL DE INTELIGENCIA DEL MUNDO */}
         <div className="lg:col-span-4 space-y-4 flex flex-col">
-          {/* Node Profile Card */}
-          <div className="bg-stone-900/80 border border-stone-800 rounded-xl p-5 space-y-4">
+          <div className="bg-stone-900/80 border border-stone-800 rounded-xl p-5 space-y-4 shadow-xl">
             <div className="flex items-start justify-between gap-2 border-b border-stone-800 pb-3">
               <div>
                 <span className="text-[10px] text-amber-400 font-cinzel uppercase tracking-wider">
-                  {selectedNode.province}
+                  {selectedRegion.macroRegion} · {selectedRegion.chunks.join(' · ')}
                 </span>
                 <h3 className="font-cinzel text-xl font-bold text-amber-100">
-                  {selectedNode.name}
+                  {selectedRegion.name}
                 </h3>
-                <p className="text-xs text-stone-400 font-cinzel">{selectedNode.chineseName}</p>
+                <p className="text-xs text-stone-400 font-cinzel">{selectedRegion.chineseName}</p>
               </div>
 
               {isHere ? (
-                <span className="px-2.5 py-1 rounded bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 text-xs font-semibold flex items-center gap-1 shrink-0">
-                  <CheckCircle className="w-3.5 h-3.5" />
-                  Aquí
-                </span>
+                <div className="flex gap-2">
+                  <span className="px-2.5 py-1 rounded bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 text-[10px] font-semibold flex items-center gap-1 shrink-0">
+                    <CheckCircle className="w-3 h-3" /> Aquí
+                  </span>
+                  
+                  <button
+                    onClick={onNavigateToCity}
+                    className="px-3 py-1.5 rounded bg-amber-600 hover:bg-amber-500 text-stone-950 text-xs font-bold cursor-pointer transition-colors shadow flex items-center gap-1.5 shrink-0"
+                  >
+                    <Store className="w-3.5 h-3.5" /> Entrar
+                  </button>
+                </div>
               ) : (
                 <button
-                  onClick={() => handleTravel(selectedNode.id)}
+                  onClick={() => handleTravel(selectedRegion.id)}
                   className="px-3 py-1.5 rounded bg-amber-600 hover:bg-amber-500 text-stone-950 text-xs font-bold cursor-pointer transition-colors shadow flex items-center gap-1.5 shrink-0"
                 >
-                  <Compass className="w-3.5 h-3.5" />
-                  Viajar
+                  <Compass className="w-3.5 h-3.5" /> Viajar
                 </button>
               )}
             </div>
 
-            <p className="text-xs text-stone-300 leading-relaxed">
-              {selectedNode.description}
+            <p className="text-xs text-stone-300 leading-relaxed italic border-l-2 border-amber-500/50 pl-2">
+              "{selectedRegion.description}"
             </p>
 
             <div className="grid grid-cols-2 gap-2 text-xs">
               <div className="bg-stone-950/60 p-2.5 rounded border border-stone-800/80">
-                <span className="text-[10px] text-stone-500 uppercase block">Facción Soberana</span>
-                <span className="font-semibold text-amber-200 truncate block">
-                  {selectedNode.rulerFaction}
+                <span className="text-[10px] text-stone-500 uppercase flex items-center gap-1">
+                  <Users className="w-3 h-3" /> Población
                 </span>
+                <span className="font-semibold text-amber-200 block mt-0.5">{selectedRegion.population.toLocaleString()}</span>
               </div>
               <div className="bg-stone-950/60 p-2.5 rounded border border-stone-800/80">
-                <span className="text-[10px] text-stone-500 uppercase block">Densidad de Qi</span>
-                <span className="font-semibold text-emerald-400 block">
-                  {selectedNode.qiDensity}
+                <span className="text-[10px] text-stone-500 uppercase flex items-center gap-1">
+                  <TrendingUp className="w-3 h-3" /> Riqueza
                 </span>
+                <span className={`font-semibold block mt-0.5 ${
+                  selectedRegion.economy.wealthLevel === 'Opulento' ? 'text-amber-400' :
+                  selectedRegion.economy.wealthLevel === 'Próspero' ? 'text-emerald-400' :
+                  selectedRegion.economy.wealthLevel === 'Moderado' ? 'text-cyan-400' : 'text-stone-400'
+                }`}>{selectedRegion.economy.wealthLevel}</span>
               </div>
               <div className="bg-stone-950/60 p-2.5 rounded border border-stone-800/80">
-                <span className="text-[10px] text-stone-500 uppercase block">Nivel de Peligro</span>
-                <span className="font-semibold text-rose-400 block">
-                  {selectedNode.threatLevel} / 10
+                <span className="text-[10px] text-stone-500 uppercase flex items-center gap-1">
+                  <Skull className="w-3 h-3" /> Peligro
                 </span>
+                <span className={`font-semibold block mt-0.5 ${
+                  selectedRegion.threatLevel > 7 ? 'text-rose-400' :
+                  selectedRegion.threatLevel > 4 ? 'text-amber-400' : 'text-emerald-400'
+                }`}>{selectedRegion.threatLevel} / 10</span>
               </div>
               <div className="bg-stone-950/60 p-2.5 rounded border border-stone-800/80">
-                <span className="text-[10px] text-stone-500 uppercase block">Reino Sugerido</span>
-                <span className="font-semibold text-sky-400 truncate block">
-                  {selectedNode.recommendedRealm}
-                </span>
+                <span className="text-[10px] text-stone-500 uppercase">Densidad Qi</span>
+                <span className="font-semibold text-emerald-400 block mt-0.5">{selectedRegion.qiDensity}</span>
               </div>
             </div>
 
-            {/* Resources found in this node */}
-            <div>
-              <span className="text-[10px] text-stone-400 uppercase font-semibold block mb-1.5">
-                Recursos y Venas Disponibles:
-              </span>
-              <div className="flex flex-wrap gap-1.5">
-                {selectedNode.availableResources.map((res, i) => (
-                  <span
-                    key={i}
-                    className="px-2 py-0.5 rounded bg-stone-950 text-stone-300 border border-stone-800 text-[11px]"
-                  >
-                    {res}
-                  </span>
-                ))}
-              </div>
+            <div className="bg-stone-950/40 p-2.5 rounded border border-stone-800/80 text-[11px]">
+              <div className="flex gap-2 mb-1"><span className="text-emerald-400 font-bold w-12">Exporta:</span> <span className="text-stone-300">{selectedRegion.economy.exports.join(', ')}</span></div>
+              <div className="flex gap-2"><span className="text-rose-400 font-bold w-12">Importa:</span> <span className="text-stone-300">{selectedRegion.economy.imports.join(', ')}</span></div>
             </div>
 
-            {/* Sub-actions for Selected Node */}
-            <div className="pt-2 border-t border-stone-800 flex gap-2">
-              <button
-                onClick={() => setActiveTab('explore')}
-                className={`flex-1 py-2 text-xs font-semibold rounded cursor-pointer transition-colors flex items-center justify-center gap-1.5 ${
-                  activeTab === 'explore'
-                    ? 'bg-amber-600 text-stone-950'
-                    : 'bg-stone-800 hover:bg-stone-700 text-stone-200'
-                }`}
-              >
-                <Dice5 className="w-3.5 h-3.5" />
-                Explorar (1d100)
+            {localFactions.length > 0 && (
+              <div>
+                <span className="text-[10px] text-stone-400 uppercase font-semibold flex items-center gap-1 mb-1.5">
+                  <Shield className="w-3 h-3" /> Facciones en el Poder
+                </span>
+                <div className="space-y-1.5">
+                  {localFactions.map(f => (
+                    <div key={f.id} className="bg-stone-950/80 p-2 rounded border border-stone-800 text-xs">
+                      <div className="font-bold text-stone-200">{f.name} <span className="text-[9px] text-amber-500 font-normal">({f.powerLevel})</span></div>
+                      <div className="text-[10px] text-stone-400">{f.type} · Líder: {f.leader}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {localResources.length > 0 && (
+              <div>
+                <span className="text-[10px] text-stone-400 uppercase font-semibold flex items-center gap-1 mb-1.5">
+                  <Leaf className="w-3 h-3" /> Recursos Naturales
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {localResources.map(res => (
+                    <span key={res.id} className="px-2 py-1 rounded bg-stone-950 border border-stone-800 text-[10px] flex items-center gap-1 text-stone-300" title={res.description}>
+                      {res.type === 'Mineral' ? <Gem className="w-3 h-3 text-cyan-400"/> : <Leaf className="w-3 h-3 text-emerald-400"/>}
+                      {res.name}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="pt-3 border-t border-stone-800 flex gap-2">
+              <button onClick={() => setActiveTab('explore')} className={`flex-1 py-2 text-xs font-semibold rounded cursor-pointer transition-colors flex items-center justify-center gap-1.5 ${activeTab === 'explore' ? 'bg-amber-600 text-stone-950' : 'bg-stone-800 hover:bg-stone-700 text-stone-200'}`}>
+                <Dice5 className="w-3.5 h-3.5" /> Explorar
               </button>
-              <button
-                onClick={() => setActiveTab('bestiary')}
-                className={`flex-1 py-2 text-xs font-semibold rounded cursor-pointer transition-colors flex items-center justify-center gap-1.5 ${
-                  activeTab === 'bestiary'
-                    ? 'bg-amber-600 text-stone-950'
-                    : 'bg-stone-800 hover:bg-stone-700 text-stone-200'
-                }`}
-              >
-                <Swords className="w-3.5 h-3.5" />
-                Cazar Bestias
+              <button onClick={() => setActiveTab('bestiary')} className={`flex-1 py-2 text-xs font-semibold rounded cursor-pointer transition-colors flex items-center justify-center gap-1.5 ${activeTab === 'bestiary' ? 'bg-amber-600 text-stone-950' : 'bg-stone-800 hover:bg-stone-700 text-stone-200'}`}>
+                <Swords className="w-3.5 h-3.5" /> Fauna
               </button>
             </div>
           </div>
 
-          {/* Action Result / Interactive Sub-Panels */}
           {activeTab === 'explore' && (
-            <div className="bg-stone-900/80 border border-stone-800 rounded-xl p-5 space-y-4 flex-1">
+            <div className="bg-stone-900/80 border border-stone-800 rounded-xl p-5 space-y-4 flex-1 shadow-xl">
               <div className="flex items-center justify-between border-b border-stone-800 pb-2.5">
                 <span className="font-cinzel text-sm font-bold text-amber-200 flex items-center gap-2">
-                  <Dice5 className="w-4 h-4 text-amber-400" />
-                  Tirada de Encuentros del Jianghu
+                  <Dice5 className="w-4 h-4 text-amber-400" /> Exploración del Territorio
                 </span>
-                <span className="text-[10px] text-stone-400">1d100 + Suerte + Fama</span>
               </div>
-
-              <p className="text-xs text-stone-300">
-                Adéntrate en los senderos de <strong>{selectedNode.name}</strong>. Tus atributos espirituales
-                (Suerte: {cultivator.attributes?.suerte || 10}, Fama: {cultivator.fama || 50}) influirán en los augurios del Dao.
-              </p>
-
-              <button
-                onClick={handleExplore}
-                disabled={!isHere}
-                className={`w-full py-2.5 rounded font-cinzel font-bold text-xs uppercase tracking-wide cursor-pointer transition-colors shadow flex items-center justify-center gap-2 ${
-                  isHere
-                    ? 'bg-amber-500 hover:bg-amber-400 text-stone-950'
-                    : 'bg-stone-800 text-stone-500 cursor-not-allowed'
-                }`}
-              >
-                <Dice5 className="w-4 h-4" />
-                {isHere ? 'Lanzar Dados del Destino (1d100)' : 'Debes Viajar Aquí para Explorar'}
+              <button onClick={handleExplore} disabled={!isHere} className={`w-full py-2.5 rounded font-cinzel font-bold text-xs uppercase tracking-wide cursor-pointer transition-colors shadow flex items-center justify-center gap-2 ${isHere ? 'bg-amber-500 hover:bg-amber-400 text-stone-950' : 'bg-stone-800 text-stone-500 cursor-not-allowed'}`}>
+                {isHere ? 'Lanzar Dados (1d100)' : 'Viaja aquí para explorar'}
               </button>
-
               {eventResult && (
-                <div className="bg-stone-950/90 border border-amber-500/30 rounded-lg p-3.5 space-y-2 animate-in fade-in">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-cinzel font-bold text-amber-300">
-                      Resultado del Dao: {eventResult.roll}
-                    </span>
-                    <span className="text-[10px] text-stone-400">Tirada Registrada</span>
-                  </div>
-                  <p className="text-xs text-stone-200 italic leading-relaxed">
-                    "{eventResult.eventText}"
-                  </p>
-                  <div className="pt-2 border-t border-stone-800 text-xs text-emerald-400 font-medium">
-                    Recompensa: {eventResult.rewardText}
-                  </div>
-                  {eventResult.loot && (
-                    <div className="bg-stone-900 p-2 rounded border border-stone-800 flex items-center gap-2 text-xs">
-                      <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
-                      <div>
-                        <div className="font-semibold text-stone-200">{eventResult.loot.name}</div>
-                        <div className="text-[10px] text-stone-400">{eventResult.loot.description}</div>
-                      </div>
-                    </div>
-                  )}
+                <div className="bg-stone-950/90 border border-amber-500/30 rounded-lg p-3 space-y-2">
+                  <div className="font-cinzel font-bold text-amber-300 text-xs">Tirada: {eventResult.roll}</div>
+                  <p className="text-[11px] text-stone-200 italic">"{eventResult.eventText}"</p>
+                  <div className="text-[11px] text-emerald-400 font-medium border-t border-stone-800 pt-1">Botín: {eventResult.rewardText}</div>
                 </div>
               )}
             </div>
           )}
 
           {activeTab === 'bestiary' && (
-            <div className="bg-stone-900/80 border border-stone-800 rounded-xl p-5 space-y-4 flex-1">
+            <div className="bg-stone-900/80 border border-stone-800 rounded-xl p-5 space-y-4 flex-1 shadow-xl">
               <div className="flex items-center justify-between border-b border-stone-800 pb-2.5">
                 <span className="font-cinzel text-sm font-bold text-amber-200 flex items-center gap-2">
-                  <Swords className="w-4 h-4 text-amber-400" />
-                  Compendio de Bestias del Vacío Caótico
+                  <Swords className="w-4 h-4 text-amber-400" /> Fauna Local
                 </span>
-                <span className="text-[10px] text-stone-400">混沌虚空异兽录</span>
               </div>
 
-              {/* Beast Select dropdown / list */}
-              <div className="space-y-1.5">
-                <label className="text-[10px] text-stone-400 uppercase">Seleccionar Presa a Rastrear:</label>
-                <select
-                  value={selectedBeast.id}
-                  onChange={(e) => {
-                    const b = BESTIAS_COMPENDIO.find((beast) => beast.id === e.target.value);
-                    if (b) setSelectedBeast(b);
-                    setHuntLog(null);
-                  }}
-                  className="w-full bg-stone-950 border border-stone-700 text-stone-200 text-xs rounded px-3 py-2 cursor-pointer focus:outline-none focus:border-amber-500"
-                >
-                  {BESTIAS_COMPENDIO.map((beast) => (
-                    <option key={beast.id} value={beast.id}>
-                      [{beast.rankCategory}] {beast.name} (Nivel {beast.threatLevel})
-                    </option>
+              {localBeasts.length === 0 ? (
+                <p className="text-xs text-stone-500 text-center py-4">No hay bestias registradas en esta región.</p>
+              ) : (
+                <div className="space-y-2">
+                  {localBeasts.map(beast => (
+                    <button
+                      key={beast.id}
+                      onClick={() => setSelectedBeast(beast)}
+                      className={`w-full text-left p-2.5 rounded border transition-colors ${selectedBeast?.id === beast.id ? 'bg-amber-950/40 border-amber-500/60' : 'bg-stone-950/60 border-stone-800 hover:border-stone-600'}`}
+                    >
+                      <div className="font-bold text-xs text-stone-200">{beast.name}</div>
+                      <div className="flex justify-between text-[10px] text-stone-400 mt-1">
+                        <span>Rango: {beast.tier}</span>
+                        <span className="text-rose-400">Nivel {beast.level}</span>
+                      </div>
+                    </button>
                   ))}
-                </select>
-              </div>
+                </div>
+              )}
 
-              {/* Selected Beast Card */}
-              <div className="bg-stone-950/70 border border-stone-800 rounded-lg p-3 space-y-2 text-xs">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <h4 className="font-cinzel font-bold text-amber-300">{selectedBeast.name}</h4>
-                    <p className="text-[10px] text-stone-400">{selectedBeast.chineseName} · {selectedBeast.habitat}</p>
+              {selectedBeast && (
+                <div className="bg-stone-950 border border-stone-800 rounded-lg p-3 space-y-2 mt-3 animate-in fade-in">
+                  <div className="font-cinzel font-bold text-amber-300 text-xs">{selectedBeast.name}</div>
+                  <div className="grid grid-cols-2 gap-1 text-[10px] text-stone-300">
+                    <div>Dao: <span className="text-amber-200">{selectedBeast.daoMark}</span></div>
+                    <div>HP: <span className="text-rose-400">{selectedBeast.hp}</span></div>
+                    <div>ATK: <span className="text-amber-400">{selectedBeast.attack}</span></div>
+                    <div>Drop: <span className="text-emerald-400">{selectedBeast.keyMaterial}</span></div>
                   </div>
-                  <span className="px-2 py-0.5 rounded bg-rose-950/60 border border-rose-500/30 text-rose-300 text-[10px] font-semibold">
-                    Amenaza {selectedBeast.threatLevel}/10
-                  </span>
+                  <button onClick={() => handleHunt(selectedBeast.id)} className="w-full mt-2 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded transition-colors">
+                    Cazar Bestia
+                  </button>
                 </div>
-
-                <div className="grid grid-cols-2 gap-1.5 text-[11px] text-stone-300">
-                  <div>Marca del Dao: <strong className="text-amber-200">{selectedBeast.daoMark}</strong></div>
-                  <div>Vitalidad: <strong className="text-rose-400">{selectedBeast.hp} HP</strong></div>
-                  <div>Poder Ataque: <strong className="text-amber-400">{selectedBeast.attack}</strong></div>
-                  <div>Defensa: <strong className="text-stone-300">{selectedBeast.defense}</strong></div>
-                </div>
-
-                <div className="text-[11px] text-stone-400 border-t border-stone-800/80 pt-1.5">
-                  <span className="text-amber-400 font-semibold">Habilidad Innata:</span> {selectedBeast.innateSkill}
-                </div>
-                <div className="text-[11px] text-emerald-400">
-                  <span className="font-semibold">Material Clave:</span> {selectedBeast.keyMaterial}
-                </div>
-              </div>
-
-              <button
-                onClick={() => handleHunt(selectedBeast.id)}
-                className="w-full py-2.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-cinzel font-bold text-xs uppercase tracking-wide cursor-pointer transition-colors shadow flex items-center justify-center gap-2"
-              >
-                <Swords className="w-4 h-4" />
-                Desafiar a Duelo de Caza
-              </button>
+              )}
 
               {huntLog && (
-                <div
-                  className={`p-3 rounded-lg border text-xs space-y-1.5 animate-in fade-in ${
-                    huntLog.victory
-                      ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-200'
-                      : 'bg-rose-950/60 border-rose-500/40 text-rose-200'
-                  }`}
-                >
-                  <div className="font-bold flex items-center gap-1.5">
-                    {huntLog.victory ? <CheckCircle className="w-4 h-4 text-emerald-400" /> : <AlertTriangle className="w-4 h-4 text-rose-400" />}
-                    {huntLog.victory ? '¡Caza Exitosa!' : 'Embestida Brutal'}
+                <div className={`p-3 rounded-lg border text-xs mt-2 ${huntLog.victory ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-200' : 'bg-rose-950/60 border-rose-500/40 text-rose-200'}`}>
+                  <div className="font-bold mb-1 flex items-center gap-1">
+                    {huntLog.victory ? <CheckCircle className="w-3 h-3" /> : <AlertTriangle className="w-3 h-3" />}
+                    {huntLog.victory ? 'Victoria' : 'Derrota'}
                   </div>
-                  <p className="text-[11px] leading-relaxed">{huntLog.log}</p>
+                  <p className="text-[10px] leading-relaxed">{huntLog.log}</p>
                 </div>
               )}
             </div>

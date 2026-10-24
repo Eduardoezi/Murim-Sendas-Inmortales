@@ -11,7 +11,7 @@ import {
   SECTS_LIST,
   MERIT_AUCTION_ITEMS,
 } from './src/data/gameData';
-import { AuctionListing, WorldBossState, LiveDuelState } from './src/types/game';
+import { AuctionListing, WorldBossState, LiveDuelState, Cultivator } from './src/types/game';
 import { getDb, closeDb } from './server/db';
 import {
   loadWorldState,
@@ -22,6 +22,17 @@ import {
   expireAuctions,
   logEvent,
 } from './server/game/state';
+
+import {
+  processMeditate,
+  processAllocateAttributePoint,
+  processUnlockMeridian,
+  processBreakthrough,
+  processEquipGear,
+  processConsumePill,
+} from './server/game/cultivation';
+
+import { rollDestiny, createSyntacticCharacter } from './server/game/creation';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -125,7 +136,6 @@ function tickWorldBoss() {
     return;
   }
 
-  // Snapshot cada 30 s para no perder el contador en un crash
   if (++bossPersistCounter >= 30) {
     bossPersistCounter = 0;
     saveWorldState('world_boss', worldBoss);
@@ -163,11 +173,9 @@ wss.on('connection', (ws: WebSocket) => {
 
       switch (type) {
         case 'player_auth': {
-          // El cliente manda su ID y si es nuevo, el objeto completo
           const existingPlayer = loadPlayer(payload.id);
           
           if (existingPlayer) {
-            // Ya existe en DB: Cargamos lo que hay en la DB autoritativa
             const sectName = payload.sectName || existingPlayer.sectId || 'Vagabundo del Jianghu';
             clients.set(ws, {
               ws, id: existingPlayer.id, name: existingPlayer.name, realm: existingPlayer.realm,
@@ -175,7 +183,6 @@ wss.on('connection', (ws: WebSocket) => {
             });
             ws.send(JSON.stringify({ type: 'player_sync', payload: existingPlayer }));
           } else if (payload.fullPlayerData) {
-            // Es nuevo o primera sincronización: Guardamos en DB
             savePlayer(payload.fullPlayerData);
             clients.set(ws, {
               ws, id: payload.fullPlayerData.id, name: payload.fullPlayerData.name, realm: payload.fullPlayerData.realm,
@@ -210,10 +217,102 @@ wss.on('connection', (ws: WebSocket) => {
           const player = loadPlayer(client.id);
           if (!player) return;
 
-          if (payload.action === 'study_scroll') {
-            const result = processStudyScroll(player, payload.scrollId);
+          let result: { success: boolean; message: string; updatedPlayer: Cultivator } | null = null;
+
+          switch (payload.action) {
+            case 'study_scroll':
+              result = processStudyScroll(player, payload.scrollId);
+              break; 
+            case 'meditate':
+              result = processMeditate(player);
+              break;
+            case 'allocate_attribute':
+              result = processAllocateAttributePoint(player, payload.attrKey);
+              break;
+            case 'unlock_meridian':
+              result = processUnlockMeridian(player, payload.meridianId);
+              break;
+            case 'attempt_breakthrough':
+              result = processBreakthrough(player);
+              break;
+            case 'equip_gear':
+              result = processEquipGear(player, payload.itemId);
+              break;
+            case 'consume_pill':
+              result = processConsumePill(player, payload.itemId);
+              break;
+
+            case 'accept_mission': {
+              const client = clients.get(ws);
+              if (!client) return;
+
+              const player = loadPlayer(client.id);
+              if (!player) return;
+
+              const mission = payload.mission;
+              
+              // Validación básica
+              if ((player.subRealm || 1) < mission.requiredRealmLevel) {
+                ws.send(JSON.stringify({ type: 'action_result', payload: { success: false, message: 'Tu nivel de reino es insuficiente para esta misión.' } }));
+                return;
+              }
+
+              if (!player.activeMissions) player.activeMissions = [];
+              if (!player.reputation) player.reputation = {};
+
+              const newMission = {
+                ...mission,
+                startedAt: Date.now(),
+                status: 'in_progress'
+              };
+
+              player.activeMissions.push(newMission);
+              savePlayer(player);
+
+              ws.send(JSON.stringify({ type: 'action_result', payload: { success: true, message: `Misión aceptada: ${mission.title}` } }));
+              ws.send(JSON.stringify({ type: 'player_sync', payload: player }));
+              break;
+            }
+
+            case 'claim_mission': {
+              const client = clients.get(ws);
+              if (!client) return;
+
+              const player = loadPlayer(client.id);
+              if (!player || !player.activeMissions) return;
+
+              const missionIndex = player.activeMissions.findIndex(m => m.id === payload.missionId);
+              if (missionIndex === -1) return;
+
+              const mission = player.activeMissions[missionIndex];
+              const now = Date.now();
+              const endTime = mission.startedAt + (mission.durationMinutes * 60 * 1000);
+
+              if (now < endTime) {
+                ws.send(JSON.stringify({ type: 'action_result', payload: { success: false, message: 'La misión aún no ha terminado. El tiempo no perdona.' } }));
+                return;
+              }
+
+              // Recompensas
+              player.spiritStones += mission.rewardStones;
+              if (!player.reputation) player.reputation = {};
+              player.reputation[mission.factionId] = (player.reputation[mission.factionId] || 0) + mission.rewardReputation;
+
+              // Eliminar misión
+              player.activeMissions.splice(missionIndex, 1);
+
+              savePlayer(player);
+
+              ws.send(JSON.stringify({ type: 'action_result', payload: { success: true, message: `¡Misión completada! Has obtenido ${mission.rewardStones} Piedras y +${mission.rewardReputation} de Reputación.` } }));
+              ws.send(JSON.stringify({ type: 'player_sync', payload: player }));
+              break;
+            }
+            default:
+              result = { success: false, message: `Acción desconocida: ${payload.action}`, updatedPlayer: player };
+          }
+
+          if (result) {
             ws.send(JSON.stringify({ type: 'action_result', payload: result }));
-            // Enviamos el estado actualizado para que la UI se refresque
             ws.send(JSON.stringify({ type: 'player_sync', payload: result.updatedPlayer }));
           }
           break;
@@ -544,6 +643,31 @@ wss.on('connection', (ws: WebSocket) => {
   });
 });
 
+// ENDPOINTS HTTP
+app.post('/api/player/roll', (req: Request, res: Response) => {
+  try {
+    const destinyRoll = rollDestiny();
+    res.json({ success: true, roll: destinyRoll });
+  } catch (err) {
+    console.error('[api] Error rolling destiny:', err);
+    res.status(500).json({ success: false, message: 'El destino está nublado.' });
+  }
+});
+
+app.post('/api/player/create', (req: Request, res: Response) => {
+  try {
+    const payload = req.body;
+    if (!payload.id || !payload.name || !payload.classType || !payload.rollData) {
+      return res.status(400).json({ success: false, message: 'Datos incompletos para forjar el sendero.' });
+    }
+    const newPlayer = createSyntacticCharacter(payload);
+    res.json({ success: true, player: newPlayer });
+  } catch (err) {
+    console.error('[api] ERROR CREANDO PERSONAJE:', err);
+    res.status(500).json({ success: false, message: 'El Dao rechazó tu creación: ' + (err as Error).message });
+  }
+});
+
 app.get('/api/state', (_req: Request, res: Response) => {
   res.json({
     worldBoss,
@@ -618,6 +742,54 @@ function shutdown(signal: string) {
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+// server.ts (Añadir al final, antes de setupServer)
+
+import { generateDailyMissions } from './server/game/dynamicMissions';
+
+// Endpoint para obtener las misiones diarias de una facción
+app.get('/api/missions/:factionId', (req: Request, res: Response) => {
+  try {
+    const { factionId } = req.params;
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const missions = generateDailyMissions(factionId, today);
+    res.json({ success: true, missions });
+  } catch (err) {
+    console.error('[api] Error generating missions:', err);
+    res.status(500).json({ success: false, message: 'El destino está nublado.' });
+  }
+});
+
+// Endpoint para aceptar una misión y guardarla en el jugador
+app.post('/api/missions/accept', (req: Request, res: Response) => {
+  try {
+    const { playerId, mission } = req.body;
+    const player = loadPlayer(playerId);
+    if (!player) return res.status(404).json({ success: false, message: 'Jugador no encontrado.' });
+
+    // Inicializar arrays si no existen
+    if (!player.activeMissions) player.activeMissions = [];
+    if (!player.reputation) player.reputation = {};
+
+    // Verificar si ya está activa
+    const exists = player.activeMissions.find(m => m.id === mission.id);
+    if (exists) return res.status(400).json({ success: false, message: 'Misión ya aceptada.' });
+
+    const newMission = {
+      ...mission,
+      startedAt: Date.now(),
+      status: 'in_progress'
+    };
+
+    player.activeMissions.push(newMission);
+    savePlayer(player);
+    
+    res.json({ success: true, player });
+  } catch (err) {
+    console.error('[api] Error accepting mission:', err);
+    res.status(500).json({ success: false, message: 'Error al aceptar la misión.' });
+  }
+});
 
 async function setupServer() {
   if (!isProduction) {

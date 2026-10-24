@@ -1,6 +1,10 @@
 import { getDb } from '../db';
 import { Cultivator } from '../../src/types/game';
 
+ type PlayerWithLastSeenAt = Cultivator & {
+  lastSeenAt?: number;
+};
+ 
 export interface PlayerSummary {
   id: string;
   name: string;
@@ -11,11 +15,70 @@ export interface PlayerSummary {
   updatedAt: number;
 }
 
+export function processOfflineProgress(player: PlayerWithLastSeenAt): { 
+  updatedPlayer: Cultivator; 
+  offlineMinutes: number; 
+  qiGained: number; 
+  missionsCompleted: number;
+} {
+  const now = Date.now();
+  // Si el jugador es nuevo o no tiene lastSeenAt, asumimos que acaba de entrar
+  const lastSeen = player.lastSeenAt || now; 
+  const offlineMs = Math.max(0, now - lastSeen);
+  
+  // Tope máximo de 24 horas offline para evitar exploits
+  const cappedMs = Math.min(offlineMs, 24 * 60 * 60 * 1000);
+  const offlineMinutes = Math.floor(cappedMs / 60000);
+
+  // Si estuvo fuera menos de 1 minuto, no hacemos nada
+  if (offlineMinutes < 1) {
+    return { 
+      updatedPlayer: { ...player, lastSeenAt: now }, 
+      offlineMinutes: 0, 
+      qiGained: 0, 
+      missionsCompleted: 0 
+    };
+  }
+
+  // Fórmula de Regeneración de Qi Offline:
+  // Base: 1 Qi cada 2 segundos (30 Qi por minuto) modificado por la pureza del Dantian
+  const qiPerMinute = Math.max(10, Math.floor(player.dantianPurity / 2));
+  let potentialQiGain = qiPerMinute * offlineMinutes;
+  
+  // El Qi no puede exceder el máximo del Dantian
+  const newQi = Math.min(player.maxQi, player.qi + potentialQiGain);
+  const actualQiGained = newQi - player.qi;
+
+  // Procesar misiones asíncronas que hayan terminado mientras estaba offline
+  let missionsCompleted = 0;
+  const updatedMissions = (player.activeMissions || []).map(m => {
+    if (m.status === 'in_progress') {
+      const endTime = m.startedAt + (m.durationMinutes * 60 * 1000);
+      if (now >= endTime) {
+        missionsCompleted++;
+        return { ...m, status: 'completed' as const };
+      }
+    }
+    return m;
+  });
+
+  return {
+    updatedPlayer: {
+      ...player,
+      qi: newQi,
+      activeMissions: updatedMissions,
+      lastSeenAt: now
+    },
+    offlineMinutes,
+    qiGained: actualQiGained,
+    missionsCompleted
+  };
+}
+
 export function loadPlayer(id: string): Cultivator | null {
   const row = getDb().prepare('SELECT * FROM players WHERE id = ?').get(id) as any;
   if (!row) return null;
 
-  // 1. Si existe snapshot de perfil completo, lo hidratamos directamente
   if (row.profile_json) {
     try {
       const full = JSON.parse(row.profile_json) as Cultivator;
@@ -38,13 +101,14 @@ export function loadPlayer(id: string): Cultivator | null {
         karma: row.karma,
         fama: row.fama,
         currentLocationNodeId: row.current_location_node_id || full.currentLocationNodeId,
+        activeMissions: row.active_missions_json ? JSON.parse(row.active_missions_json) : [],
+        reputation: row.reputation_json ? JSON.parse(row.reputation_json) : {},
       };
     } catch (e) {
       console.error('[db] Error parsing profile_json for player', id, e);
     }
   }
 
-  // 2. Reconstrucción segura desde columnas individuales en caso de perfil legado
   return {
     id: row.id,
     name: row.name,
@@ -63,19 +127,18 @@ export function loadPlayer(id: string): Cultivator | null {
     karma: row.karma,
     fama: row.fama,
     currentLocationNodeId: row.current_location_node_id,
-
     attributes: JSON.parse(row.attributes_json || '{}'),
     stats: JSON.parse(row.stats_json || '{}'),
     meridians: JSON.parse(row.meridians_json || '[]'),
     knownTechniques: JSON.parse(row.known_techniques_json || '[]'),
     equippedGear: JSON.parse(row.equipped_gear_json || '{}'),
     secretTechnique: row.secret_technique_json ? JSON.parse(row.secret_technique_json) : undefined,
-
     libraryScrolls: JSON.parse(row.library_scrolls_json || '[]'),
     inventory: JSON.parse(row.inventory_json || '[]'),
     disciples: JSON.parse(row.disciples_json || '[]'),
     currency: JSON.parse(row.currency_json || '{}'),
-
+    activeMissions: row.active_missions_json ? JSON.parse(row.active_missions_json) : [],
+    reputation: row.reputation_json ? JSON.parse(row.reputation_json) : {},
     title: 'Discípulo del Dao',
     inventoryMaxSlots: 30,
     completedQuests: [],
@@ -101,43 +164,27 @@ export function savePlayer(player: Cultivator): void {
       spirit_stones, sect_merits, dantian_purity, karma, fama, current_location_node_id,
       attributes_json, stats_json, meridians_json, known_techniques_json, equipped_gear_json, secret_technique_json,
       library_scrolls_json, inventory_json, disciples_json, currency_json, profile_json,
+      active_missions_json, reputation_json,
       created_at, updated_at, last_seen_at
     ) VALUES (
       @id, @name, @class_type, @sect_id, @sect_rank, @realm, @sub_realm, @qi, @max_qi, @hp, @max_hp,
       @spirit_stones, @sect_merits, @dantian_purity, @karma, @fama, @current_location_node_id,
       @attributes_json, @stats_json, @meridians_json, @known_techniques_json, @equipped_gear_json, @secret_technique_json,
       @library_scrolls_json, @inventory_json, @disciples_json, @currency_json, @profile_json,
+      @active_missions_json, @reputation_json,
       @created_at, @updated_at, @last_seen_at
     ) ON CONFLICT(id) DO UPDATE SET
-      name = excluded.name,
-      class_type = excluded.class_type,
-      sect_id = excluded.sect_id,
-      sect_rank = excluded.sect_rank,
-      realm = excluded.realm,
-      sub_realm = excluded.sub_realm,
-      qi = excluded.qi,
-      max_qi = excluded.max_qi,
-      hp = excluded.hp,
-      max_hp = excluded.max_hp,
-      spirit_stones = excluded.spirit_stones,
-      sect_merits = excluded.sect_merits,
-      dantian_purity = excluded.dantian_purity,
-      karma = excluded.karma,
-      fama = excluded.fama,
+      name = excluded.name, class_type = excluded.class_type, sect_id = excluded.sect_id, sect_rank = excluded.sect_rank,
+      realm = excluded.realm, sub_realm = excluded.sub_realm, qi = excluded.qi, max_qi = excluded.max_qi,
+      hp = excluded.hp, max_hp = excluded.max_hp, spirit_stones = excluded.spirit_stones, sect_merits = excluded.sect_merits,
+      dantian_purity = excluded.dantian_purity, karma = excluded.karma, fama = excluded.fama,
       current_location_node_id = excluded.current_location_node_id,
-      attributes_json = excluded.attributes_json,
-      stats_json = excluded.stats_json,
-      meridians_json = excluded.meridians_json,
-      known_techniques_json = excluded.known_techniques_json,
-      equipped_gear_json = excluded.equipped_gear_json,
-      secret_technique_json = excluded.secret_technique_json,
-      library_scrolls_json = excluded.library_scrolls_json,
-      inventory_json = excluded.inventory_json,
-      disciples_json = excluded.disciples_json,
-      currency_json = excluded.currency_json,
-      profile_json = excluded.profile_json,
-      updated_at = excluded.updated_at,
-      last_seen_at = excluded.last_seen_at
+      attributes_json = excluded.attributes_json, stats_json = excluded.stats_json, meridians_json = excluded.meridians_json,
+      known_techniques_json = excluded.known_techniques_json, equipped_gear_json = excluded.equipped_gear_json,
+      secret_technique_json = excluded.secret_technique_json, library_scrolls_json = excluded.library_scrolls_json,
+      inventory_json = excluded.inventory_json, disciples_json = excluded.disciples_json, currency_json = excluded.currency_json,
+      profile_json = excluded.profile_json, active_missions_json = excluded.active_missions_json, reputation_json = excluded.reputation_json,
+      updated_at = excluded.updated_at, last_seen_at = excluded.last_seen_at
   `).run({
     id: player.id,
     name: player.name,
@@ -167,6 +214,8 @@ export function savePlayer(player: Cultivator): void {
     disciples_json: JSON.stringify(player.disciples || []),
     currency_json: JSON.stringify(player.currency || {}),
     profile_json: JSON.stringify(player),
+    active_missions_json: JSON.stringify(player.activeMissions || []),
+    reputation_json: JSON.stringify(player.reputation || {}),
     created_at: now,
     updated_at: now,
     last_seen_at: now,

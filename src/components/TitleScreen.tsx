@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useGame } from '../context/GameContext';
 import { CharacterClass } from '../types/game';
 import { CHARACTER_CLASSES, SECTS_LIST } from '../data/gameData';
-import { Shield, Sparkles, Feather, Zap, Compass, UserCheck, Trash2, PlusCircle, ArrowRight } from 'lucide-react';
+import { Shield, Sparkles, Feather, Zap, Compass, UserCheck, Trash2, PlusCircle, ArrowRight, Dices, Skull, BookOpen } from 'lucide-react';
 
 interface SavedPlayer {
   id: string;
@@ -15,13 +15,23 @@ interface SavedPlayer {
 }
 
 export const TitleScreen: React.FC = () => {
-  const { createCharacter, loadSavedCharacter } = useGame();
-  const [name, setName] = useState('Xiao Feng');
-  const [selectedClass, setSelectedClass] = useState<CharacterClass>('warrior');
-  const [selectedSect, setSelectedSect] = useState<string>(SECTS_LIST[0].id);
+  const { createSyntacticCharacter, loadSavedCharacter } = useGame();
+  
   const [savedPlayers, setSavedPlayers] = useState<SavedPlayer[]>([]);
   const [loadingPlayerId, setLoadingPlayerId] = useState<string | null>(null);
   const [showCreateForm, setShowCreateForm] = useState<boolean>(false);
+
+  const [step, setStep] = useState(1);
+  const [name, setName] = useState('Xiao Feng');
+  const [selectedClass, setSelectedClass] = useState<CharacterClass>('warrior');
+  const [selectedSect, setSelectedSect] = useState<string>(SECTS_LIST[0].id);
+  
+  const [destinyRoll, setDestinyRoll] = useState<any>(null);
+  const [isRolling, setIsRolling] = useState(false);
+
+  const [background, setBackground] = useState('Errante');
+  const [lineage, setLineage] = useState('Plebeyo');
+  const [affinity, setAffinity] = useState('Ortodoxo');
 
   useEffect(() => {
     fetch('/api/players')
@@ -33,14 +43,28 @@ export const TitleScreen: React.FC = () => {
           setShowCreateForm(true);
         }
       })
-      .catch(() => {
-        setShowCreateForm(true);
-      });
+      .catch(() => setShowCreateForm(true));
   }, []);
 
-  const handleStart = (e: React.FormEvent) => {
-    e.preventDefault();
-    createCharacter(name, selectedClass, selectedSect);
+  const handleRollDestiny = async () => {
+    setIsRolling(true);
+    try {
+      const res = await fetch('/api/player/roll', { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        setDestinyRoll(data.roll);
+        setStep(2);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsRolling(false);
+    }
+  };
+
+  const handleCreate = () => {
+    if (!destinyRoll) return;
+    createSyntacticCharacter({ name, classType: selectedClass, sectId: selectedSect, rollData: destinyRoll, background, lineage, affinity });
   };
 
   const handleResume = async (playerId: string) => {
@@ -58,273 +82,200 @@ export const TitleScreen: React.FC = () => {
     }
   };
 
-  const handleDelete = async (e: React.MouseEvent, playerId: string) => {
-    e.stopPropagation();
-    if (!window.confirm('¿Seguro que deseas eliminar este cultivador de los anales de la inmortalidad?')) {
-      return;
-    }
-    try {
-      const res = await fetch(`/api/player/${playerId}`, { method: 'DELETE' });
-      const data = await res.json();
-      if (data.success) {
-        setSavedPlayers((prev) => prev.filter((p) => p.id !== playerId));
-        if (savedPlayers.length <= 1) {
-          setShowCreateForm(true);
-        }
-      }
-    } catch (err) {
-      console.error('Error al borrar cultivador:', err);
-    }
-  };
-
-  const classIcons = {
-    warrior: Shield,
-    rogue: Feather,
-    scholar: Sparkles,
-    archer: Zap,
-    lancer: Compass,
-  };
+  const classIcons = { warrior: Shield, rogue: Feather, scholar: Sparkles, archer: Zap, lancer: Compass };
 
   return (
     <div className="relative min-h-screen w-full flex items-center justify-center p-4 bg-[#05070c] overflow-hidden">
-      {/* Background Hero Artwork */}
       <div className="absolute inset-0 z-0">
-        <img
-          src="/src/assets/images/murim_hero_landscape_1792518333064.jpg"
-          alt="Montañas Celestiales de Murim"
-          referrerPolicy="no-referrer"
-          className="w-full h-full object-cover opacity-35 filter brightness-75 scale-105 transition-transform duration-10000"
-        />
-        <div className="absolute inset-0 bg-gradient-to-t from-[#05070c] via-[#05070c]/70 to-transparent" />
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_20%,#05070c_85%)]" />
+        <img src="/src/assets/images/murim_hero_landscape_1792518333064.jpg" alt="Fondo" className="w-full h-full object-cover opacity-30" />
+        <div className="absolute inset-0 bg-gradient-to-t from-[#05070c] via-[#05070c]/80 to-transparent" />
       </div>
 
       <div className="relative z-10 w-full max-w-4xl py-8 flex flex-col items-center">
-        {/* Bespoke Header Lockup */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center gap-2 mb-2 text-xs uppercase tracking-[0.3em] text-amber-400 font-cinzel">
-            <span>天地之道</span>
-            <span>·</span>
-            <span>Sendas del Dao y la Espada</span>
-          </div>
-          <h1 className="font-cinzel text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight text-amber-100 text-balance mb-3">
-            Murim: Sendas Inmortales
-          </h1>
-          <p className="max-w-xl text-stone-400 text-sm mx-auto leading-relaxed">
-            Forja tu destino en el Jianghu. Despierta los 8 meridianos de tu Dantian, domina las artes marciales elementales y lidera tu propia secta hacia la inmortalidad.
-          </p>
+          <h1 className="font-cinzel text-4xl font-bold text-amber-100 mb-2">Murim: Sendas Inmortales</h1>
+          <p className="text-stone-400 text-sm">Forja tu destino en el Jianghu.</p>
         </div>
 
-        {/* Saved Characters Banner (SQLite Authoritative) */}
         {savedPlayers.length > 0 && !showCreateForm && (
-          <div className="w-full bg-stone-900/90 border border-amber-900/40 rounded-xl p-6 md:p-8 backdrop-blur-md shadow-2xl mb-6">
+          <div className="w-full bg-stone-900/90 border border-amber-900/40 rounded-xl p-6 backdrop-blur-md">
             <div className="flex items-center justify-between pb-4 mb-4 border-b border-stone-800">
-              <div className="flex items-center gap-2">
-                <UserCheck className="w-5 h-5 text-amber-400" />
-                <h2 className="font-cinzel text-lg font-bold text-amber-100">
-                  Cultivadores Registrados en SQLite
-                </h2>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowCreateForm(true)}
-                className="px-3 py-1.5 bg-amber-950/80 hover:bg-amber-900 border border-amber-700/60 rounded-lg text-xs text-amber-200 transition-colors flex items-center gap-1.5 cursor-pointer"
-              >
-                <PlusCircle className="w-3.5 h-3.5" />
-                <span>Nuevo Cultivador</span>
+              <h2 className="font-cinzel text-lg font-bold text-amber-100">Cultivadores Registrados</h2>
+              <button onClick={() => { setShowCreateForm(true); setStep(1); }} className="px-3 py-1.5 bg-amber-600 text-stone-950 font-bold rounded-lg text-xs cursor-pointer">
+                Nuevo Cultivador
               </button>
             </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-              {savedPlayers.map((player) => {
-                const sect = SECTS_LIST.find((s) => s.id === player.sectId);
-                const Icon = classIcons[player.classType] || Shield;
-                const isLoading = loadingPlayerId === player.id;
-
-                return (
-                  <div
-                    key={player.id}
-                    onClick={() => !isLoading && handleResume(player.id)}
-                    className="p-4 rounded-xl border border-stone-800 bg-stone-950/70 hover:border-amber-500/80 hover:bg-amber-950/20 transition-all cursor-pointer flex items-center justify-between group"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-lg bg-stone-900 border border-stone-700/80 flex items-center justify-center text-amber-400 group-hover:scale-105 transition-transform">
-                        <Icon className="w-5 h-5" />
-                      </div>
-                      <div>
-                        <div className="font-cinzel text-base font-bold text-stone-100 group-hover:text-amber-200 transition-colors">
-                          {player.name}
-                        </div>
-                        <div className="text-xs text-amber-400 font-mono">
-                          {player.realm} · Nv.{player.subRealm}
-                        </div>
-                        <div className="text-[11px] text-stone-500">
-                          {sect?.name || 'Vagabundo del Jianghu'} · {new Date(player.updatedAt).toLocaleDateString()}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={(e) => handleDelete(e, player.id)}
-                        title="Borrar de la base de datos"
-                        className="p-2 text-stone-500 hover:text-rose-400 hover:bg-stone-900 rounded-lg transition-colors cursor-pointer"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                      <button
-                        type="button"
-                        disabled={isLoading}
-                        className="px-3 py-1.5 rounded-lg bg-amber-600/90 hover:bg-amber-500 text-stone-950 text-xs font-semibold flex items-center gap-1 group-hover:bg-amber-400 transition-colors cursor-pointer"
-                      >
-                        <span>{isLoading ? 'Cargando...' : 'Reanudar'}</span>
-                        <ArrowRight className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {savedPlayers.map((player) => (
+                <div key={player.id} onClick={() => handleResume(player.id)} className="p-4 bg-stone-950/70 border border-stone-800 rounded-xl hover:border-amber-500 cursor-pointer flex justify-between items-center">
+                  <div>
+                    <div className="font-bold text-amber-200">{player.name}</div>
+                    <div className="text-xs text-stone-400">{player.realm} · {SECTS_LIST.find(s=>s.id===player.sectId)?.name}</div>
                   </div>
-                );
-              })}
+                  <ArrowRight className="w-4 h-4 text-amber-500" />
+                </div>
+              ))}
             </div>
           </div>
         )}
 
-        {/* Character Creation Panel */}
-        {(showCreateForm || savedPlayers.length === 0) && (
-          <div className="w-full bg-stone-900/85 border border-amber-900/30 rounded-xl p-6 md:p-8 backdrop-blur-md shadow-2xl">
-            {savedPlayers.length > 0 && (
-              <div className="mb-4 pb-3 border-b border-stone-800 flex items-center justify-between">
-                <span className="text-xs text-stone-400 font-mono">Creando un nuevo sendero en el Jianghu</span>
-                <button
-                  type="button"
-                  onClick={() => setShowCreateForm(false)}
-                  className="text-xs text-amber-400 hover:underline cursor-pointer"
-                >
-                  ← Ver Cultivadores Guardados
-                </button>
+        {showCreateForm && (
+          <div className="w-full bg-stone-900/90 border border-amber-900/30 rounded-xl p-6 md:p-8 backdrop-blur-md shadow-2xl">
+            <div className="flex items-center justify-between mb-8 pb-4 border-b border-stone-800">
+              {[1, 2, 3, 4].map((s) => (
+                <div key={s} className={`flex items-center gap-2 ${step >= s ? 'text-amber-400' : 'text-stone-600'}`}>
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center border ${step >= s ? 'border-amber-400 bg-amber-950/50' : 'border-stone-700 bg-stone-900'}`}>
+                    {s}
+                  </div>
+                  <span className="text-xs font-cinzel hidden sm:block">
+                    {s === 1 ? 'Destino' : s === 2 ? 'Psique' : s === 3 ? 'Trasfondo' : 'Confirmar'}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {step === 1 && (
+              <div className="space-y-6 animate-in fade-in">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-xs font-semibold text-stone-300 mb-2">Nombre del Cultivador</label>
+                    <div className="flex gap-2">
+                      <input type="text" value={name} onChange={(e) => setName(e.target.value)} className="flex-1 px-4 py-2.5 bg-stone-950 border border-stone-700 rounded-lg text-amber-200" maxLength={24} />
+                      <button onClick={() => {
+                        const names = ['Li Chen', 'Meng Hao', 'Xiao Yan', 'Yun Che', 'Tang San', 'Ye Fan', 'Jian Long'];
+                        setName(names[Math.floor(Math.random() * names.length)]);
+                      }} className="px-3 bg-stone-800 hover:bg-stone-700 rounded-lg text-amber-400" title="Nombre Aleatorio">
+                        <Dices className="w-5 h-5" />
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-stone-300 mb-2">Secta de Iniciación</label>
+                    <select value={selectedSect} onChange={(e) => setSelectedSect(e.target.value)} className="w-full px-4 py-2.5 bg-stone-950 border border-stone-700 rounded-lg text-amber-200">
+                      {SECTS_LIST.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-stone-300 mb-2">Arquetipo Marcial</label>
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                    {(Object.keys(CHARACTER_CLASSES) as CharacterClass[]).map((clsKey) => {
+                      const cls = CHARACTER_CLASSES[clsKey];
+                      const Icon = classIcons[clsKey];
+                      const isSelected = selectedClass === clsKey;
+                      return (
+                        <button key={clsKey} onClick={() => setSelectedClass(clsKey)} className={`p-3 rounded-lg border text-left cursor-pointer transition ${isSelected ? 'bg-amber-950/60 border-amber-500' : 'bg-stone-950/60 border-stone-800 hover:border-stone-600'}`}>
+                          <Icon className={`w-5 h-5 mb-2 ${isSelected ? 'text-amber-400' : 'text-stone-500'}`} />
+                          <div className="text-xs font-bold text-stone-200">{cls.name}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="text-center pt-4">
+                  <button onClick={handleRollDestiny} disabled={isRolling || !name.trim()} className="px-8 py-3 bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 text-stone-950 font-cinzel font-bold text-sm uppercase rounded-lg shadow-lg flex items-center gap-2 mx-auto disabled:opacity-50 cursor-pointer">
+                    {isRolling ? 'Consultando los Cielos...' : 'Tirar los Dados del Destino'} <Dices className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
             )}
 
-            <form onSubmit={handleStart} className="space-y-6">
-              {/* Daoist Name Input */}
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-stone-300 mb-2">
-                  Nombre del Cultivador
-                </label>
-                <input
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Ingresa tu apelativo en el Jianghu..."
-                  maxLength={24}
-                  required
-                  className="w-full px-4 py-2.5 bg-stone-950/80 border border-stone-700/80 rounded-lg text-amber-200 placeholder-stone-600 focus:outline-none focus:border-amber-500 font-medium text-sm transition-colors"
-                />
-              </div>
-
-              {/* Class Selection: 3 Starters + 2 Advanced Specs */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-stone-300">
-                    Elige tu Arquetipo Marcial
-                  </span>
-                  <span className="text-xs text-stone-400">
-                    Afinidad elemental y bonificaciones de inicio
-                  </span>
+            {step === 2 && destinyRoll && (
+              <div className="space-y-6 animate-in fade-in">
+                <div className="text-center mb-6">
+                  <h3 className="font-cinzel text-xl text-amber-200">El Cielo ha hablado</h3>
+                  <p className="text-xs text-stone-400">Revisa las marcas de tu nacimiento y tu alma.</p>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-                  {(Object.keys(CHARACTER_CLASSES) as CharacterClass[]).map((clsKey) => {
-                    const cls = CHARACTER_CLASSES[clsKey];
-                    const Icon = classIcons[clsKey];
-                    const isSelected = selectedClass === clsKey;
-
-                    return (
-                      <button
-                        key={clsKey}
-                        type="button"
-                        onClick={() => setSelectedClass(clsKey)}
-                        className={`text-left p-3.5 rounded-lg border transition-all cursor-pointer ${
-                          isSelected
-                            ? 'bg-amber-950/60 border-amber-500 text-amber-100 shadow-md ring-1 ring-amber-500/50'
-                            : 'bg-stone-950/60 border-stone-800 text-stone-400 hover:border-stone-600 hover:text-stone-200'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between mb-1.5">
-                          <Icon className={`w-4 h-4 ${isSelected ? 'text-amber-400' : 'text-stone-500'}`} />
-                          <span className="text-xs font-mono text-amber-400">{cls.startingElement}</span>
-                        </div>
-                        <div className="font-semibold text-xs text-stone-100">{cls.name}</div>
-                        <div className="text-[11px] text-stone-400 mt-1 line-clamp-2 leading-snug">
-                          {cls.role}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* Selected class details banner */}
-                <div className="mt-3 p-3 bg-stone-950/60 border border-stone-800/80 rounded-lg text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div className="text-stone-300">
-                    <span className="text-amber-400 font-semibold">Misión Exclusiva:</span>{' '}
-                    {CHARACTER_CLASSES[selectedClass].exclusiveQuest}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="bg-stone-950/60 border border-stone-800 p-4 rounded-xl">
+                    <h4 className="text-xs font-bold text-amber-400 uppercase mb-3 flex items-center gap-2"><Shield className="w-4 h-4" /> Físicos Únicos</h4>
+                    <ul className="space-y-2 text-xs text-stone-300">
+                      {destinyRoll.physiques.map((p: any, i: number) => <li key={i}>• <span className="text-amber-200 font-semibold">{p.name}:</span> {p.description}</li>)}
+                    </ul>
                   </div>
-                  <div className="text-stone-400 text-right whitespace-nowrap">
-                    Ataque +{CHARACTER_CLASSES[selectedClass].bonusStats.attack} · Vitalidad +{CHARACTER_CLASSES[selectedClass].bonusStats.hp}
+                  <div className="bg-stone-950/60 border border-stone-800 p-4 rounded-xl">
+                    <h4 className="text-xs font-bold text-emerald-400 uppercase mb-3 flex items-center gap-2"><Sparkles className="w-4 h-4" /> Providencias Innatas</h4>
+                    <ul className="space-y-2 text-xs text-stone-300">
+                      {destinyRoll.providences.map((p: any, i: number) => <li key={i}>• <span className="text-emerald-200 font-semibold">{p.name}:</span> {p.description}</li>)}
+                    </ul>
+                  </div>
+                  <div className="bg-stone-950/60 border border-stone-800 p-4 rounded-xl">
+                    <h4 className="text-xs font-bold text-rose-400 uppercase mb-3 flex items-center gap-2"><Skull className="w-4 h-4" /> Cicatrices del Alma</h4>
+                    <ul className="space-y-2 text-xs text-stone-300">
+                      {destinyRoll.scars.map((s: string, i: number) => <li key={i}>• {s}</li>)}
+                    </ul>
+                  </div>
+                  <div className="bg-stone-950/60 border border-stone-800 p-4 rounded-xl">
+                    <h4 className="text-xs font-bold text-cyan-400 uppercase mb-3 flex items-center gap-2"><BookOpen className="w-4 h-4" /> Juramentos</h4>
+                    <ul className="space-y-2 text-xs text-stone-300">
+                      {destinyRoll.oaths.map((o: string, i: number) => <li key={i}>• {o}</li>)}
+                    </ul>
                   </div>
                 </div>
-              </div>
 
-              {/* Starting Sect Selection */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-stone-300">
-                    Secta de Iniciación
-                  </span>
-                  <span className="text-xs text-stone-400">
-                    Facciones en pugna por el control del territorio
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                  {SECTS_LIST.map((sect) => {
-                    const isSelected = selectedSect === sect.id;
-                    return (
-                      <button
-                        key={sect.id}
-                        type="button"
-                        onClick={() => setSelectedSect(sect.id)}
-                        className={`text-left p-3.5 rounded-lg border transition-all cursor-pointer ${
-                          isSelected
-                            ? 'bg-amber-950/50 border-amber-500 text-amber-100 shadow-sm'
-                            : 'bg-stone-950/60 border-stone-800 text-stone-400 hover:border-stone-700 hover:text-stone-300'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-xs font-semibold text-stone-200">{sect.name}</span>
-                        </div>
-                        <div className="text-[10px] text-amber-400 font-mono mb-1">{sect.alignment}</div>
-                        <p className="text-[11px] text-stone-400 line-clamp-2">{sect.description}</p>
-                        <div className="mt-2 text-[10px] text-emerald-400">{sect.activeBuff}</div>
-                      </button>
-                    );
-                  })}
+                <div className="flex justify-between pt-6 border-t border-stone-800">
+                  <button onClick={() => setStep(1)} className="px-4 py-2 text-stone-400 hover:text-white">Volver</button>
+                  <button onClick={() => setStep(3)} className="px-6 py-2 bg-amber-600 text-stone-950 font-bold rounded-lg hover:bg-amber-500">Aceptar Destino</button>
                 </div>
               </div>
+            )}
 
-              {/* Submit CTA */}
-              <div className="pt-2">
-                <button
-                  type="submit"
-                  className="w-full py-3.5 px-6 rounded-lg bg-gradient-to-r from-amber-600 via-amber-500 to-amber-600 hover:from-amber-500 hover:to-amber-500 text-stone-950 font-cinzel font-bold text-sm tracking-wider uppercase shadow-lg shadow-amber-900/30 transition-all cursor-pointer"
-                >
-                  Comenzar Sendero Inmortal
-                </button>
-                <div className="text-center text-xs text-stone-500 mt-2">
-                  Partidas y subastas sincronizadas en tiempo real en todo el Jianghu
+            {step === 3 && (
+              <div className="space-y-6 animate-in fade-in">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div>
+                    <label className="block text-xs font-semibold text-stone-300 mb-2">Linaje</label>
+                    <div className="space-y-2">
+                      {['Noble', 'Plebeyo'].map(l => (
+                        <button key={l} onClick={() => setLineage(l)} className={`w-full p-3 text-left rounded-lg border text-xs ${lineage === l ? 'bg-amber-950/60 border-amber-500 text-amber-200' : 'bg-stone-950 border-stone-800 text-stone-400'}`}>{l}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-stone-300 mb-2">Afinidad</label>
+                    <div className="space-y-2">
+                      {['Ortodoxo', 'Heterodoxo', 'Demoniaco'].map(a => (
+                        <button key={a} onClick={() => setAffinity(a)} className={`w-full p-3 text-left rounded-lg border text-xs ${affinity === a ? 'bg-amber-950/60 border-amber-500 text-amber-200' : 'bg-stone-950 border-stone-800 text-stone-400'}`}>{a}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-stone-300 mb-2">Trasfondo</label>
+                    <select value={background} onChange={(e) => setBackground(e.target.value)} className="w-full p-3 bg-stone-950 border border-stone-800 rounded-lg text-xs text-amber-200">
+                      {['Errante', 'Discípulo Externo', 'Hijo de Clan Noble', 'Hijo de Realeza', 'Mercader', 'Forjador', 'Erudito'].map(b => <option key={b} value={b}>{b}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div className="flex justify-between pt-6 border-t border-stone-800">
+                  <button onClick={() => setStep(2)} className="px-4 py-2 text-stone-400 hover:text-white">Volver</button>
+                  <button onClick={() => setStep(4)} className="px-6 py-2 bg-amber-600 text-stone-950 font-bold rounded-lg hover:bg-amber-500">Siguiente</button>
                 </div>
               </div>
-            </form>
+            )}
+
+            {step === 4 && (
+              <div className="space-y-6 animate-in fade-in text-center">
+                <h3 className="font-cinzel text-2xl text-amber-100">Forjar Sendero</h3>
+                <p className="text-sm text-stone-400 max-w-md mx-auto">Estás a punto de iniciar tu camino en el Jianghu. Tus decisiones y el destino marcado por los cielos te esperan.</p>
+                
+                <div className="bg-stone-950/80 border border-stone-800 p-4 rounded-xl inline-block text-left text-xs space-y-1 mb-4">
+                  <div><span className="text-stone-500">Nombre:</span> <span className="text-amber-200 font-bold">{name}</span></div>
+                  <div><span className="text-stone-500">Secta:</span> {SECTS_LIST.find(s=>s.id===selectedSect)?.name}</div>
+                  <div><span className="text-stone-500">Linaje:</span> {lineage} ({affinity})</div>
+                  <div><span className="text-stone-500">Trasfondo:</span> {background}</div>
+                </div>
+
+                <div className="flex justify-center gap-4 pt-4">
+                  <button onClick={() => setStep(3)} className="px-6 py-2 text-stone-400 hover:text-white">Volver</button>
+                  <button onClick={handleCreate} className="px-8 py-3 bg-gradient-to-r from-amber-500 to-amber-600 text-stone-950 font-cinzel font-bold rounded-lg shadow-xl hover:from-amber-400 hover:to-amber-500 text-lg">
+                    COMENZAR SENDERO INMORTAL
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

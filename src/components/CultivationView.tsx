@@ -55,7 +55,7 @@ export const CultivationView: React.FC<CultivationViewProps> = ({ onOpenInventor
               {cultivator.realm} · Capa {cultivator.subRealm} / 9
             </h2>
             <p className="text-xs text-stone-400 mt-1 max-w-xl">
-              Asienta el Qi celestial en tu Dantian bajo y desbloquea los ocho canales extraordinarios para purificar tu médula espiritual.
+              Asienta el Qi celestial en tu Dantian bajo y desbloquea los ocho canales extraordinarios.
             </p>
           </div>
 
@@ -86,117 +86,69 @@ export const CultivationView: React.FC<CultivationViewProps> = ({ onOpenInventor
           </div>
         </div>
 
-        {/* Breakthrough feedback banner */}
         {breakthroughNotice && (
-          <div
-            className={`mt-4 p-3 rounded-lg border text-xs flex items-center gap-3 ${
-              breakthroughNotice.success
-                ? 'bg-emerald-950/60 border-emerald-500/60 text-emerald-200'
-                : 'bg-rose-950/60 border-rose-500/60 text-rose-200'
-            }`}
-          >
-            {breakthroughNotice.success ? (
-              <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
-            ) : (
-              <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
-            )}
+          <div className={`mt-4 p-3 rounded-lg border text-xs flex items-center gap-3 ${breakthroughNotice.success ? 'bg-emerald-950/60 border-emerald-500/60 text-emerald-200' : 'bg-rose-950/60 border-rose-500/60 text-rose-200'}`}>
+            {breakthroughNotice.success ? <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" /> : <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />}
             <span>{breakthroughNotice.message}</span>
           </div>
         )}
 
-        {/* Energy Meters Strip */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-6 pt-6 border-t border-stone-800/80">
           <div>
             <div className="flex justify-between text-xs text-stone-400 mb-1">
-              <span>Energía Espiritual (Qi en Dantian)</span>
-              <span className="font-mono text-amber-300 tabular-nums">
-                {cultivator.qi} / {cultivator.maxQi} ({qiPercent}%)
-              </span>
+              <span>Energía Espiritual (Qi)</span>
+              <span className="font-mono text-amber-300 tabular-nums">{cultivator.qi} / {cultivator.maxQi} ({qiPercent}%)</span>
             </div>
             <div className="w-full bg-stone-950 h-2.5 rounded-full overflow-hidden border border-stone-800">
-              <div
-                className="bg-gradient-to-r from-amber-600 to-amber-400 h-full transition-all duration-300"
-                style={{ width: `${qiPercent}%` }}
-              />
+              <div className="bg-gradient-to-r from-amber-600 to-amber-400 h-full transition-all duration-300" style={{ width: `${qiPercent}%` }} />
             </div>
           </div>
 
           <div>
             <div className="flex justify-between text-xs text-stone-400 mb-1">
-              <span>Vitalidad (Salud de Cuerpo)</span>
-              <span className="font-mono text-rose-400 tabular-nums">
-                {cultivator.hp} / {cultivator.maxHp}
-              </span>
+              <span>Vitalidad (Salud)</span>
+              <span className="font-mono text-rose-400 tabular-nums">{cultivator.hp} / {cultivator.maxHp}</span>
             </div>
             <div className="w-full bg-stone-950 h-2.5 rounded-full overflow-hidden border border-stone-800">
-              <div
-                className="bg-gradient-to-r from-rose-600 to-rose-400 h-full transition-all duration-300"
-                style={{ width: `${Math.min(100, (cultivator.hp / cultivator.maxHp) * 100)}%` }}
-              />
+              <div className="bg-gradient-to-r from-rose-600 to-rose-400 h-full transition-all duration-300" style={{ width: `${Math.min(100, (cultivator.hp / cultivator.maxHp) * 100)}%` }} />
             </div>
           </div>
 
           <div>
             <div className="flex justify-between text-xs text-stone-400 mb-1">
-              <span>Pureza del Núcleo Espiritual</span>
-              <span className="font-mono text-cyan-300 tabular-nums">
-                {cultivator.dantianPurity}%
-              </span>
+              <span>Pureza del Núcleo</span>
+              <span className="font-mono text-cyan-300 tabular-nums">{cultivator.dantianPurity}%</span>
             </div>
             <div className="w-full bg-stone-950 h-2.5 rounded-full overflow-hidden border border-stone-800">
-              <div
-                className="bg-gradient-to-r from-cyan-600 to-cyan-400 h-full transition-all duration-300"
-                style={{ width: `${cultivator.dantianPurity}%` }}
-              />
+              <div className="bg-gradient-to-r from-cyan-600 to-cyan-400 h-full transition-all duration-300" style={{ width: `${cultivator.dantianPurity}%` }} />
             </div>
           </div>
         </div>
       </div>
 
-      {/* Main Grid: Character Visualizer + D3 Dantian Matrix + Extraordinary Meridians */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left Column: Character Figure & Gear (Arma, Túnica, Artefacto) */}
         <div className="lg:col-span-4">
-          <CharacterShowcaseCard
-            cultivator={cultivator}
-            onOpenInventory={onOpenInventory || (() => {})}
-          />
+          <CharacterShowcaseCard cultivator={cultivator} onOpenInventory={onOpenInventory || (() => {})} />
         </div>
 
-        {/* Center Column: D3 Dantian Energy & Acupoint Visualization */}
         <div className="lg:col-span-4">
-          <DantianEnergyVisualization
-            cultivator={cultivator}
-            onSelectMeridian={(id) => unlockMeridian(id)}
-          />
+          <DantianEnergyVisualization cultivator={cultivator} onSelectMeridian={(id) => unlockMeridian(id)} />
         </div>
 
-        {/* Right Column: 8 Extraordinary Meridians List & Martial Attributes */}
         <div className="lg:col-span-4 space-y-4">
           <div className="bg-stone-900/60 border border-stone-800 rounded-xl p-5">
             <div className="flex items-center justify-between mb-3 pb-2 border-b border-stone-800">
-              <h3 className="font-cinzel text-sm font-semibold text-stone-200">
-                Canales Extraordinarios
-              </h3>
-              <span className="text-xs text-amber-400 font-mono">
-                {cultivator.qi} Qi Disponible
-              </span>
+              <h3 className="font-cinzel text-sm font-semibold text-stone-200">Canales Extraordinarios</h3>
+              <span className="text-xs text-amber-400 font-mono">{cultivator.qi} Qi Disp.</span>
             </div>
 
             <div className="space-y-2.5 max-h-[460px] overflow-y-auto pr-1">
-              {cultivator.meridians.map((meridian) => {
-                const Icon = elementIcons[meridian.elementAffinity];
+              {(cultivator.meridians || []).map((meridian) => {
+                const Icon = elementIcons[meridian.elementAffinity] || Sparkles; // FALLBACK AÑADIDO AQUÍ
                 const canUnlock = !meridian.unlocked && cultivator.qi >= meridian.qiCost;
 
                 return (
-                  <div
-                    key={meridian.id}
-                    className={`p-3 rounded-lg border text-xs transition-colors ${
-                      meridian.unlocked
-                        ? 'bg-amber-950/20 border-amber-600/40 text-stone-200'
-                        : 'bg-stone-950/60 border-stone-800/80 text-stone-400'
-                    }`}
-                  >
+                  <div key={meridian.id} className={`p-3 rounded-lg border text-xs transition-colors ${meridian.unlocked ? 'bg-amber-950/20 border-amber-600/40 text-stone-200' : 'bg-stone-950/60 border-stone-800/80 text-stone-400'}`}>
                     <div className="flex items-center justify-between mb-1">
                       <div className="flex items-center gap-1.5">
                         <Icon className={`w-3.5 h-3.5 ${meridian.unlocked ? 'text-amber-400' : 'text-stone-500'}`} />
@@ -204,30 +156,13 @@ export const CultivationView: React.FC<CultivationViewProps> = ({ onOpenInventor
                       </div>
                       <span className="text-[10px] text-stone-500 font-mono">{meridian.pinyin}</span>
                     </div>
-
-                    <div className="text-[11px] text-amber-300/90 mb-2">
-                      {meridian.bonus}
-                    </div>
-
+                    <div className="text-[11px] text-amber-300/90 mb-2">{meridian.bonus}</div>
                     <div className="flex items-center justify-between pt-1 border-t border-stone-800/60">
-                      <span className="text-[10px] text-stone-400">
-                        Afinidad: {meridian.elementAffinity}
-                      </span>
-
+                      <span className="text-[10px] text-stone-400">Afinidad: {meridian.elementAffinity}</span>
                       {meridian.unlocked ? (
-                        <span className="text-[10px] text-emerald-400 font-semibold">
-                          Desbloqueado
-                        </span>
+                        <span className="text-[10px] text-emerald-400 font-semibold">Desbloqueado</span>
                       ) : (
-                        <button
-                          onClick={() => unlockMeridian(meridian.id)}
-                          disabled={!canUnlock}
-                          className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-colors cursor-pointer ${
-                            canUnlock
-                              ? 'bg-amber-600 hover:bg-amber-500 text-stone-950'
-                              : 'bg-stone-800 text-stone-500 cursor-not-allowed'
-                          }`}
-                        >
+                        <button onClick={() => unlockMeridian(meridian.id)} disabled={!canUnlock} className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-colors cursor-pointer ${canUnlock ? 'bg-amber-600 hover:bg-amber-500 text-stone-950' : 'bg-stone-800 text-stone-500 cursor-not-allowed'}`}>
                           Abrir ({meridian.qiCost} Qi)
                         </button>
                       )}
@@ -240,115 +175,47 @@ export const CultivationView: React.FC<CultivationViewProps> = ({ onOpenInventor
         </div>
       </div>
 
-      {/* Attributes & Progression Matrix (Módulo 2 Lore & Sistema de Cultivo) */}
       <div className="bg-stone-900/70 border border-stone-800 rounded-xl p-6 space-y-5">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-stone-800 pb-3">
           <div>
             <div className="flex items-center gap-2 text-xs text-amber-400 font-cinzel">
               <span>REGLAS Y ATRIBUTOS DE CULTIVO</span>
-              <span>·</span>
-              <span>五行十二經脈</span>
             </div>
-            <h3 className="font-cinzel text-xl font-bold text-amber-100">
-              Matriz de Atributos del Alma & Cuerpo
-            </h3>
+            <h3 className="font-cinzel text-xl font-bold text-amber-100">Matriz de Atributos del Alma & Cuerpo</h3>
           </div>
-
           <div className="flex items-center gap-3">
-            <span className="text-xs text-stone-300">
-              Puntos de Atributo Libres:{' '}
-              <strong className="text-amber-300 font-mono text-base tabular-nums">
-                {cultivator.freeAttributePoints || 0}
-              </strong>
-            </span>
+            <span className="text-xs text-stone-300">Puntos Libres: <strong className="text-amber-300 font-mono text-base tabular-nums">{cultivator.freeAttributePoints || 0}</strong></span>
           </div>
         </div>
 
-        {/* 10 Core Attributes Grid with + Buttons */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 text-xs">
           {[
-            { key: 'fuerza', label: 'Fuerza', desc: 'Densidad del núcleo y daño físico', val: cultivator.attributes?.fuerza || 16, color: 'text-amber-400' },
-            { key: 'destreza', label: 'Destreza', desc: 'Velocidad, reflejos y evasión', val: cultivator.attributes?.destreza || 18, color: 'text-emerald-400' },
-            { key: 'constitucion', label: 'Constitución', desc: 'Salud y soporte de tribulaciones', val: cultivator.attributes?.constitucion || 16, color: 'text-rose-400' },
-            { key: 'inteligencia', label: 'Inteligencia', desc: 'Aprendizaje técnico y Bundle Theory', val: cultivator.attributes?.inteligencia || 18, color: 'text-blue-400' },
-            { key: 'percepcion', label: 'Percepción', desc: 'Sentido espiritual y lectura de Qi', val: cultivator.attributes?.percepcion || 16, color: 'text-purple-400' },
-            { key: 'astucia', label: 'Astucia', desc: 'Sigilo y técnicas ilusorias', val: cultivator.attributes?.astucia || 14, color: 'text-yellow-400' },
-            { key: 'voluntad', label: 'Voluntad', desc: 'Resistencia a cuellos de botella', val: cultivator.attributes?.voluntad || 16, color: 'text-teal-400' },
-            { key: 'suerte', label: 'Suerte', desc: 'Probabilidad de eventos del destino (1d100)', val: cultivator.attributes?.suerte || 12, color: 'text-cyan-400' },
-            { key: 'sabiduria', label: 'Sabiduría', desc: 'Comprensión cósmica del Dao', val: cultivator.attributes?.sabiduria || 16, color: 'text-indigo-400' },
-            { key: 'carisma', label: 'Carisma', desc: 'Liderazgo y reclutamiento de discípulos', val: cultivator.attributes?.carisma || 14, color: 'text-pink-400' },
+            { key: 'fuerza', label: 'Fuerza', desc: 'Densidad y daño físico', val: cultivator.attributes?.fuerza || 16, color: 'text-amber-400' },
+            { key: 'destreza', label: 'Destreza', desc: 'Velocidad y evasión', val: cultivator.attributes?.destreza || 18, color: 'text-emerald-400' },
+            { key: 'constitucion', label: 'Constitución', desc: 'Salud y tribulaciones', val: cultivator.attributes?.constitucion || 16, color: 'text-rose-400' },
+            { key: 'inteligencia', label: 'Inteligencia', desc: 'Aprendizaje y Bundle Theory', val: cultivator.attributes?.inteligencia || 18, color: 'text-blue-400' },
+            { key: 'percepcion', label: 'Percepción', desc: 'Sentido y lectura de Qi', val: cultivator.attributes?.percepcion || 16, color: 'text-purple-400' },
+            { key: 'astucia', label: 'Astucia', desc: 'Sigilo e ilusiones', val: cultivator.attributes?.astucia || 14, color: 'text-yellow-400' },
+            { key: 'voluntad', label: 'Voluntad', desc: 'Resistencia a cuellos', val: cultivator.attributes?.voluntad || 16, color: 'text-teal-400' },
+            { key: 'suerte', label: 'Suerte', desc: 'Eventos del destino', val: cultivator.attributes?.suerte || 12, color: 'text-cyan-400' },
+            { key: 'sabiduria', label: 'Sabiduría', desc: 'Comprensión cósmica', val: cultivator.attributes?.sabiduria || 16, color: 'text-indigo-400' },
+            { key: 'carisma', label: 'Carisma', desc: 'Liderazgo y discípulos', val: cultivator.attributes?.carisma || 14, color: 'text-pink-400' },
           ].map((attr) => (
-            <div
-              key={attr.key}
-              className="bg-stone-950/80 p-3 rounded-lg border border-stone-800/80 flex flex-col justify-between"
-            >
+            <div key={attr.key} className="bg-stone-950/80 p-3 rounded-lg border border-stone-800/80 flex flex-col justify-between">
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <span className="font-semibold text-stone-200">{attr.label}</span>
-                  <span className={`font-mono font-bold text-sm tabular-nums ${attr.color}`}>
-                    {attr.val}
-                  </span>
+                  <span className={`font-mono font-bold text-sm tabular-nums ${attr.color}`}>{attr.val}</span>
                 </div>
-                <p className="text-[10px] text-stone-500 leading-tight mb-2">
-                  {attr.desc}
-                </p>
+                <p className="text-[10px] text-stone-500 leading-tight mb-2">{attr.desc}</p>
               </div>
-
-              <button
-                onClick={() => allocateAttributePoint(attr.key as any)}
-                disabled={(cultivator.freeAttributePoints || 0) <= 0}
-                className="w-full py-1 rounded bg-stone-900 hover:bg-stone-800 disabled:opacity-40 text-stone-300 border border-stone-700 text-[10px] font-semibold flex items-center justify-center gap-1 cursor-pointer disabled:cursor-not-allowed transition-colors"
-              >
+              <button onClick={() => allocateAttributePoint(attr.key as any)} disabled={(cultivator.freeAttributePoints || 0) <= 0} className="w-full py-1 rounded bg-stone-900 hover:bg-stone-800 disabled:opacity-40 text-stone-300 border border-stone-700 text-[10px] font-semibold flex items-center justify-center gap-1 cursor-pointer disabled:cursor-not-allowed transition-colors">
                 <span>+1 Punto</span>
               </button>
             </div>
           ))}
         </div>
-
-        {/* Derived Formulas from Lore (Módulo 2 & Sistema de Cultivo) */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs pt-3 border-t border-stone-800/80">
-          <div className="bg-stone-950/50 p-3 rounded border border-stone-800/80">
-            <span className="text-[10px] text-stone-500 uppercase block">Sentido Espiritual (Radio)</span>
-            <span className="font-mono font-bold text-emerald-400 text-sm">
-              {cultivator.spiritSense || 40} metros
-            </span>
-            <span className="text-[10px] text-stone-500 block mt-0.5">
-              (Percepción×2 + Sabiduría×1.5 + Nivel×10)
-            </span>
-          </div>
-
-          <div className="bg-stone-950/50 p-3 rounded border border-stone-800/80">
-            <span className="text-[10px] text-stone-500 uppercase block">Poder Efectivo Total</span>
-            <span className="font-mono font-bold text-amber-300 text-sm">
-              {Math.floor((cultivator.baseAttack + cultivator.spiritPower) * (1 + (cultivator.subRealm || 1) * 0.1))} pts
-            </span>
-            <span className="text-[10px] text-stone-500 block mt-0.5">
-              Fórmula base comparativa de combate
-            </span>
-          </div>
-
-          <div className="bg-stone-950/50 p-3 rounded border border-stone-800/80">
-            <span className="text-[10px] text-stone-500 uppercase block">Naturaleza del Qi (Karma)</span>
-            <span className={`font-mono font-bold text-sm ${cultivator.karma > 100 ? 'text-amber-200' : cultivator.karma < -100 ? 'text-purple-400' : 'text-stone-300'}`}>
-              {cultivator.karma > 500 ? 'Qi Blanco Primigenio' : cultivator.karma > 100 ? 'Qi Blanco Luminoso' : cultivator.karma < -500 ? 'Qi Oscuro Primigenio' : cultivator.karma < -100 ? 'Qi Oscuro Violento' : 'Qi Neutro Primordial'} ({cultivator.karma})
-            </span>
-            <span className="text-[10px] text-stone-500 block mt-0.5">
-              Determina afinidades y resonancia con el Dao
-            </span>
-          </div>
-
-          <div className="bg-stone-950/50 p-3 rounded border border-stone-800/80">
-            <span className="text-[10px] text-stone-500 uppercase block">Escala de Dantian</span>
-            <span className="font-mono font-bold text-cyan-400 text-sm">
-              Escala: {cultivator.dantianScale || 'Gota'}
-            </span>
-            <span className="text-[10px] text-stone-500 block mt-0.5">
-              Gota → Cáliz → Estanque → Lago → Mar
-            </span>
-          </div>
-        </div>
       </div>
     </div>
   );
 };
-
