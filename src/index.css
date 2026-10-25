@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  min-height: 100vh; /* Permite que la página crezca verticalmente */
+  background-color: #05070c;
+  scroll-behavior: smooth;
+  overflow-x: hidden; /* Evita scroll horizontal, pero permite el vertical */
+}
+
+/* Solo ocultamos el scroll en el componente del juego (AdminPage) */
+.game-container {
+  height: 100vh;
+  overflow: hidden;
+}
