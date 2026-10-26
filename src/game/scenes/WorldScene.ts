@@ -6,6 +6,7 @@ import { Province } from '../../core/data/world/types';
 import { ChunkManager, screenToMap } from '../managers/ChunkManager';
 import { PlayerEntity } from '../entities/PlayerEntity';
 import { BeastEntity } from '../entities/BeastEntity';
+import { MinimapSystem } from '../systems/MinimapSystem';
 
 const TILE_WIDTH = 64;
 const TILE_HEIGHT = 32;
@@ -23,6 +24,10 @@ export class WorldScene extends Phaser.Scene {
   private faunaGroup!: Phaser.Physics.Arcade.Group;
   private province!: Province;
   private vignette!: Phaser.GameObjects.Image;
+  // ── Minimapa ──────────────────────────────────────────────────────────────
+  private minimap!: MinimapSystem;
+  private worldOrigin = { x: 0, y: 0 };       // origen del mapa (Chang'an)
+  private currentWaypoint: { x: number; y: number } | null = null;
 
   constructor() {
     super({ key: 'WorldScene' });
@@ -170,6 +175,7 @@ export class WorldScene extends Phaser.Scene {
     const shaanxi = INITIAL_PROVINCES.find(p => p.id === 'prov_shaanxi') as Province || INITIAL_PROVINCES[0];
     this.province = shaanxi;
     const origin = (shaanxi as any).coords ?? { x: 580, y: 334 };
+    this.worldOrigin = origin; // el minimapa trabaja en coords absolutas del mapa
     
     this.treeGroup = this.physics.add.staticGroup();
     this.faunaGroup = this.physics.add.group(); 
@@ -204,29 +210,66 @@ export class WorldScene extends Phaser.Scene {
     this.cameras.main.startFollow(this.player.sprite, true, 0.1, 0.1);
     this.chunkManager.update(this.player.sprite.x, this.player.sprite.y);
 
-    // Input: Click to Move
-    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+    // ── Movimiento por destino: unificado para click-en-mundo y click-en-minimapa.
+    // `tile` está en coordenadas ABSOLUTAS del mapa (el minimapa las usa porque
+    // los POIs/capitales viven en el plano 1000x1000; el mundo render relativo al origen).
+    const moveToTile = (tile: { x: number; y: number }) => {
       if (this.player.isMoving) return;
-      const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
-      const mapCoords = screenToMap(worldPoint.x, worldPoint.y);
-      const tileKey = `${mapCoords.x},${mapCoords.y}`;
 
-      // Bloquear clic en agua o árboles (O(1))
+      const localTarget = { x: tile.x - this.worldOrigin.x, y: tile.y - this.worldOrigin.y };
+      const tileKey = `${localTarget.x},${localTarget.y}`;
+
+      // Bloquear clic en agua o árboles cargados (O(1)); fuera de chunk confiamos en geoSampler
       if (this.chunkManager.waterTiles.has(tileKey) || this.chunkManager.obstacles.has(tileKey)) return;
 
       const startMapCoords = screenToMap(this.player.sprite.x, this.player.sprite.y - CUBE_HEIGHT);
       const path = findPath(
-        startMapCoords.x, startMapCoords.y, mapCoords.x, mapCoords.y, 
+        startMapCoords.x, startMapCoords.y, localTarget.x, localTarget.y,
         (x, y) => this.chunkManager.obstacles.has(`${x},${y}`)
       );
 
       if (path.length > 0) {
+        this.currentWaypoint = { ...tile };
         this.player.walkPath(this, path, mapToScreen, () => {
-          localStorage.setItem('murim_player_pos', JSON.stringify({ x: mapCoords.x, y: mapCoords.y }));
+          this.currentWaypoint = null;
+          localStorage.setItem('murim_player_pos', JSON.stringify(localTarget));
           this.chunkManager.update(this.player.sprite.x, this.player.sprite.y);
         });
       }
+    };
+
+    // Input: Click to Move sobre el mundo
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      // Si el click cae sobre el minimapa, él gestiona su propio destino
+      if (this.minimap && this.minimap.isPointerOver(pointer.x, pointer.y)) return;
+      if (this.player.isMoving) return;
+      const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+      const local = screenToMap(worldPoint.x, worldPoint.y);
+      moveToTile({ x: local.x + this.worldOrigin.x, y: local.y + this.worldOrigin.y });
     });
+
+    // ── Minimapa: radar + click-to-move + zoom con rueda sobre el widget ──
+    this.minimap = new MinimapSystem(this, {
+      getPlayerTile: () => {
+        const m = screenToMap(this.player.sprite.x, this.player.sprite.y - CUBE_HEIGHT);
+        return { x: m.x + this.worldOrigin.x, y: m.y + this.worldOrigin.y };
+      },
+      getEnemies: () => {
+        const out: Array<{ x: number; y: number }> = [];
+        this.faunaGroup.getChildren().forEach((child) => {
+          const spr = child as Phaser.Physics.Arcade.Sprite;
+          if (!spr.active) return;
+          // Solo terrestres: los acuáticos (serpientes de río) no son amenaza radar
+          if (spr.getData('aquatic')) return;
+          const m = screenToMap(spr.x, spr.y - CUBE_HEIGHT);
+          out.push({ x: m.x + this.worldOrigin.x, y: m.y + this.worldOrigin.y });
+        });
+        return out;
+      },
+      getWaypoint: () => this.currentWaypoint,
+      onMapClick: (tx, ty) => moveToTile({ x: tx, y: ty }),
+    });
+    this.scale.on('resize', () => this.minimap?.handleResize());
 
     // Input: Zoom con la Rueda
     this.input.on('wheel', (pointer: Phaser.Input.Pointer, gameObjects: any, deltaX: number, deltaY: number, deltaZ: number) => {
@@ -241,6 +284,9 @@ export class WorldScene extends Phaser.Scene {
   }
 
   update(time: number): void {
+  // 0. Minimapa (O(1): blit solo al cruzar tile + iconos baratos)
+  if (this.minimap) this.minimap.update();
+
   // 1. Jugador
   this.player.update(time);
 

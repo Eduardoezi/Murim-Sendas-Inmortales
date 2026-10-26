@@ -198,6 +198,7 @@ export class ChunkManager {
         objects.push(entity.graphics);
         objects.push(physicsSprite); // ← CRÍTICO: destruirlo al descargar
       } else {
+        physicsSprite.setData('aquatic', true); // radar del minimapa: ignorar acuáticos
         physicsSprite.setVisible(true);
         physicsSprite.setTexture('beast_snake');
         physicsSprite.setScale(0.8);

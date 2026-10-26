@@ -13,6 +13,8 @@ const BODY_H = 12;
 export class BeastEntity {
   public readonly sprite: Phaser.Physics.Arcade.Sprite;
   public readonly graphics: Phaser.GameObjects.Graphics;
+  /** Verdadero para fauna acuática (serpientes de río): no cuenta como amenaza en el radar. */
+  public isAquatic = false;
 
   private readonly scene: Phaser.Scene;
   private readonly spawnX: number;
