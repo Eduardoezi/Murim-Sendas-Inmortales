@@ -1,8 +1,17 @@
 // src/core/data/world/generators/terrainGenerator.ts
+// ─────────────────────────────────────────────────────────────────────────────
+// Capa de terreno por chunk. Dos modos:
+//   1. GEOGRÁFICO (nuevo, recomendado): la geografía real de China (geoChina +
+//      geoSampler) es la fuente de verdad. El bioma de provincia solo modula
+//      densidad de vegetación en tierra libre.
+//   2. LEGACY: río senoidal matemático (se conserva para no romper nada).
+// La bandera USE_GEO decide cuál se usa; activada por defecto.
+// ─────────────────────────────────────────────────────────────────────────────
 import { stringToHash } from '../../../utils/prng';
 import { BiomeType } from '../types';
+import { sampleGeo, naturalBiomeAt } from './geoSampler';
 
-export type TileType = 'hierba' | 'agua' | 'arena' | 'nieve';
+export type TileType = 'hierba' | 'agua' | 'arena' | 'nieve' | 'montana' | 'pantano';
 
 export interface Tile {
   waterDepth: number;
@@ -11,17 +20,22 @@ export interface Tile {
   type: TileType;
   density: number; 
   isEdgeWater: boolean; 
-  isNearWater: boolean; 
+  isNearWater: boolean;
+  /** Tramo navegable del Huang He / Yangtsé / canal (barcas/pesca futuras). */
+  navigable?: boolean;
+  /** ID geográfico real si aplica (river_yellow, desert_gobi, peak_wudang...). */
+  geoId?: string;
 }
 
-// 1. Curva Seno con MAYOR frecuencia para que se note el serpenteo
+/** Bandera de migra: modo geográfico vs legado. */
+export const USE_GEO = true;
+
+// 1. Curva Seno con MAYOR frecuencia para que se note el serpenteo (LEGACY)
 export function getRiverCenterY(x: number): number {
-  // Aumentamos el multiplicador de 0.05 a 0.15
   return x + Math.sin(x * 0.15) * 12;
 }
 
 export function getRiverWidth(x: number): number {
-  // Ancho variable más dramático
   return 4.5 + Math.sin(x * 0.2) * 2.5;
 }
 
@@ -31,6 +45,70 @@ function getForestDensity(x: number, y: number, seed: number): number {
   if (noise < 0.4 || noise > 0.6) return 0.6;
   if (noise < 0.45 || noise > 0.55) return 0.25;
   return 0.07;
+}
+
+/** Densidad de vegetación según bioma MODULADOR sobre tierra libre geográfica. */
+function biomeVegetation(biome: BiomeType): number {
+  switch (biome) {
+    case 'Bosque': return 0.9;
+    case 'Estepa': return 0.25;
+    case 'Costa': return 0.35;
+    case 'Montaña': return 0.5;
+    case 'Pantano': return 0.7;
+    case 'Nieve': return 0.2;
+    case 'Desierto': return 0.05;
+  }
+}
+
+// ── MODO GEOGRÁFICO ──────────────────────────────────────────────────────────
+function geoTileFor(mapX: number, mapY: number, provinceBiome: BiomeType, seedNum: number): Tile {
+  const g = sampleGeo(mapX, mapY);
+  const base: Tile = { x: mapX, y: mapY, type: 'hierba', density: 0, isEdgeWater: false, isNearWater: false, waterDepth: 0 };
+
+  switch (g.kind) {
+    case 'mar':
+      return { ...base, type: 'agua', waterDepth: 1, geoId: 'sea' };
+    case 'rio':
+      return { ...base, type: 'agua', waterDepth: 1, navigable: g.navigable, geoId: g.riverId };
+    case 'canal':
+      return { ...base, type: 'agua', waterDepth: 0, navigable: true, geoId: 'grand_canal' };
+    case 'lago':
+      return { ...base, type: 'agua', waterDepth: 1, geoId: g.lakeId };
+    case 'ribera': {
+      // llanura aluvial: arena húmeda junto al agua, fértil (densidad media)
+      const d = getForestDensity(mapX, mapY, seedNum);
+      return { ...base, type: 'arena', isNearWater: true, density: Math.min(1, d * 0.8), geoId: g.riverId };
+    }
+    case 'desierto':
+      return { ...base, type: 'arena', density: 0.02, geoId: g.desertId };
+    case 'montania_alta':
+      return { ...base, type: 'nieve', density: 0.0, geoId: undefined };
+    case 'montania_media':
+      return { ...base, type: 'montana', density: 0.15 };
+    case 'estribacion':
+      return { ...base, type: 'montana', density: 0.35 };
+    default: break; // null → tierra libre
+  }
+
+  // Tierra libre: usar bioma natural derivado de latitud/ruido + modulador provincial
+  const nat = naturalBiomeAt(mapX, mapY);
+  let type: TileType = 'hierba';
+  if (nat === 'Desierto') type = 'arena';
+  else if (nat === 'Nieve') type = 'nieve';
+  else if (nat === 'Pantano') type = 'pantano';
+
+  const veg = biomeVegetation(provinceBiome);
+  const natFactor = nat === 'Bosque' ? 1.0 : nat === 'Estepa' ? 0.4 : nat === 'Desierto' ? 0.1 : 0.7;
+  const density = getForestDensity(mapX, mapY, seedNum) * veg * natFactor;
+
+  // ¿vecino agua? (para palmeras/juncos en ChunkManager)
+  const near = [-1, 0, 1].some((dx) => [-1, 0, 1].some((dy) => {
+    if (dx === 0 && dy === 0) return false;
+    const n = sampleGeo(mapX + dx, mapY + dy);
+    return n.kind === 'rio' || n.kind === 'lago' || n.kind === 'mar' || n.kind === 'canal';
+  }));
+
+  return { ...base, type, density, isNearWater: near };
 }
 
 export function generateChunkTerrain(
@@ -47,7 +125,13 @@ export function generateChunkTerrain(
     for (let y = 0; y < chunkSize; y++) {
       const mapX = chunkX * chunkSize + x;
       const mapY = chunkY * chunkSize + y;
-      
+
+      if (USE_GEO) {
+        tiles.push(geoTileFor(mapX, mapY, biome, seedNum));
+        continue;
+      }
+
+      // ── LEGACY ──
       let type: TileType = 'hierba';
       let density = 0;
       let isEdgeWater = false;
@@ -72,9 +156,7 @@ export function generateChunkTerrain(
                       isNeighborWater(mapX, mapY + 1) || isNeighborWater(mapX, mapY - 1);
       }
 
-      tiles.push({
-        x: mapX, y: mapY, type, density, isEdgeWater, isNearWater, waterDepth
-      });
+      tiles.push({ x: mapX, y: mapY, type, density, isEdgeWater, isNearWater, waterDepth });
     }
   }
   return tiles;

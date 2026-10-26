@@ -1,0 +1,256 @@
+// src/core/data/world/generators/geoSampler.ts
+// ─────────────────────────────────────────────────────────────────────────────
+// Muestreo determinista de la geometría real de China sobre el plano del juego.
+// Sin estado global: cualquier tile (x,y) puede consultarse en O(waypoints).
+// Lo usan: terrainGenerator (capa base), ChunkManager (colisiones/visual),
+// y más adelante worldLayout (ubicación de POIs coherentes con el terreno).
+// ─────────────────────────────────────────────────────────────────────────────
+
+import { Point } from '../types';
+import {
+  geoToMap, MAIN_RIVERS, MAIN_LAKES, MAIN_PEAKS, MAIN_RANGES,
+  MAIN_DESERTS, SEA_POLYGON_GEO, GRAND_CANAL_GEO, RiverDef,
+} from '../seeds/geoChina';
+import { stringToHash, mulberry32 } from '../../../utils/prng';
+import { mapLat } from '../seeds/geoChina';
+
+// Precomputar los trazados en coords de mapa una sola vez (determinista).
+interface Polyline { pts: Point[]; cum: number[]; totalLen: number; }
+
+function buildPolyline(geoWaypoints: Array<[number, number]>): Polyline {
+  const pts = geoWaypoints.map(([lon, lat]) => geoToMap(lon, lat));
+  const cum: number[] = [0];
+  for (let i = 1; i < pts.length; i++) {
+    const dx = pts[i].x - pts[i - 1].x;
+    const dy = pts[i].y - pts[i - 1].y;
+    cum.push(cum[i - 1] + Math.hypot(dx, dy));
+  }
+  return { pts, cum, totalLen: cum[cum.length - 1] };
+}
+
+const RIVER_PATHS: Array<{ def: RiverDef; line: Polyline }> =
+  MAIN_RIVERS.map((def) => ({ def, line: buildPolyline(def.waypointsGeo) }));
+
+const CANAL_LINE: Polyline = buildPolyline(GRAND_CANAL_GEO);
+
+const RANGE_LINES = MAIN_RANGES.map((r) => ({
+  def: r,
+  line: buildPolyline(r.pointsGeo),
+}));
+
+const SEA_POLY_MAP: Point[] = SEA_POLYGON_GEO.map(([lon, lat]) => geoToMap(lon, lat));
+
+const LAKES_MAP = MAIN_LAKES.map((l) => ({ def: l, center: geoToMap(l.centerGeo[0], l.centerGeo[1]) }));
+const PEAKS_MAP = MAIN_PEAKS.map((p) => ({ def: p, center: geoToMap(p.centerGeo[0], p.centerGeo[1]) }));
+const DESERTS_MAP = MAIN_DESERTS.map((d) => ({ def: d, center: geoToMap(d.centerGeo[0], d.centerGeo[1]) }));
+
+// ── utilidades geométricas ───────────────────────────────────────────────────
+
+function distToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const abx = bx - ax, aby = by - ay;
+  const len2 = abx * abx + aby * aby;
+  if (len2 === 0) return Math.hypot(px - ax, py - ay);
+  let t = ((px - ax) * abx + (py - ay) * aby) / len2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + abx * t), py - (ay + aby * t));
+}
+
+/** Distancia mínima del punto a una polilínea suavizada (con serpenteo senoidal). */
+function distToRiver(x: number, y: number, line: Polyline, seedNum: number): number {
+  let best = Infinity;
+  const { pts } = line;
+  // Serpenteo: desplazamos cada tramo perpendicularmente con sin() determinista.
+  for (let i = 1; i < pts.length; i++) {
+    const ax = pts[i - 1].x, ay = pts[i - 1].y;
+    const bx = pts[i].x, by = pts[i].y;
+    const segLen = Math.hypot(bx - ax, by - ay);
+    if (segLen < 1) continue;
+    // vector normal unitario
+    const nx = -(by - ay) / segLen, ny = (bx - ax) / segLen;
+    // proyección → parámetro s a lo largo del tramo (en tiles)
+    let t = ((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / (segLen * segLen);
+    t = Math.max(0, Math.min(1, t));
+    const sAbs = line.cum[i - 1] + t * segLen; // distancia acumulada global
+    const wobble = Math.sin(sAbs * 0.045 + seedNum) * 5 + Math.sin(sAbs * 0.013 + seedNum * 2) * 8;
+    const sax = ax + (bx - ax) * t + nx * wobble;
+    const say = ay + (by - ay) * t + ny * wobble;
+    const d = Math.hypot(x - sax, y - say);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+function pointInPolygon(x: number, y: number, poly: Point[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+// ── API pública ──────────────────────────────────────────────────────────────
+
+export type GeoFeatureKind =
+  | 'mar' | 'rio' | 'canal' | 'lago'
+  | 'montania_alta' | 'montania_media' | 'estribacion'
+  | 'desierto' | 'ribera';
+
+export interface GeoSample {
+  kind: GeoFeatureKind | null;   // rasgo dominante del tile (null = tierra libre)
+  riverId?: string;              // si es agua fluvial, qué río
+  navigable?: boolean;           // tramo navegable (barcas/pesca)
+  heightLevel?: 1 | 2 | 3;       // elevación montañosa
+  desertId?: string;
+  lakeId?: string;
+}
+
+/**
+ * Muestra todos los rasgos geográficos reales para un tile del mapa.
+ * Coste: O(#ríos × #tramos) ≈ ~60 ops — despreciable frente a render.
+ */
+export function sampleGeo(x: number, y: number): GeoSample {
+  // 1. Mar (polígono este/sureste)
+  if (pointInPolygon(x, y, SEA_POLY_MAP)) return { kind: 'mar' };
+
+  // 2. Ríos (con serpenteo determinista por río)
+  for (const { def, line } of RIVER_PATHS) {
+    const seedNum = (stringToHash(def.id) % 1000) / 97.3;
+    const d = distToRiver(x, y, line, seedNum);
+    // ancho crece hacia la desembocadura (estuario más ancho)
+    const taper = 0.7 + 0.6 * (d >= 0 ? progressAlong(line, x, y) : 0); // 0 cabecera → 1 boca
+    const halfW = (def.width / 2) * taper;
+    if (d <= halfW) {
+      const prog = progressAlong(line, x, y);
+      const distFromMouthTiles = (1 - prog) * line.totalLen;
+      return {
+        kind: 'rio',
+        riverId: def.id,
+        navigable: !!def.navigableFromMouth && distFromMouthTiles <= def.navigableFromMouth,
+      };
+    }
+    if (d <= halfW + 2) return { kind: 'ribera', riverId: def.id }; // franja de arena/húmeda
+  }
+
+  // 3. Gran Canal (recto, estrecho)
+  {
+    const d = distPlainPolyline(x, y, CANAL_LINE);
+    if (d <= 3) return { kind: 'canal', navigable: true };
+  }
+
+  // 4. Lagos (elipses)
+  for (const { def, center } of LAKES_MAP) {
+    const ex = (x - center.x) / def.rxTiles;
+    const ey = (y - center.y) / def.ryTiles;
+    if (ex * ex + ey * ey <= 1) return { kind: 'lago', lakeId: def.id };
+  }
+
+  // 5. Picos montañosos (círculos con anillos de altura)
+  let bestMountain: GeoSample | null = null;
+  for (const { def, center } of PEAKS_MAP) {
+    const d = Math.hypot(x - center.x, y - center.y);
+    if (d <= def.radiusTiles) {
+      const ratio = d / def.radiusTiles; // 0 centro → 1 borde
+      const level: 1 | 2 | 3 =
+        def.heightLevel === 3 ? (ratio < 0.45 ? 3 : ratio < 0.75 ? 2 : 1)
+        : def.heightLevel === 2 ? (ratio < 0.55 ? 2 : 1)
+        : 1;
+      const kind: GeoFeatureKind = level === 3 ? 'montania_alta' : level === 2 ? 'montania_media' : 'estribacion';
+      if (!bestMountain || level > (bestMountain.heightLevel ?? 0)) {
+        bestMountain = { kind, heightLevel: level };
+      }
+    }
+  }
+
+  // 6. Cordilleras lineales
+  for (const { def, line } of RANGE_LINES) {
+    const d = distPlainPolyline(x, y, line);
+    if (d <= def.thicknessTiles / 2) {
+      const half = def.thicknessTiles / 2;
+      const ratio = d / half;
+      const level: 1 | 2 | 3 =
+        def.heightLevel === 3 ? (ratio < 0.4 ? 3 : ratio < 0.7 ? 2 : 1)
+        : def.heightLevel === 2 ? (ratio < 0.5 ? 2 : 1)
+        : 1;
+      const kind: GeoFeatureKind = level === 3 ? 'montania_alta' : level === 2 ? 'montania_media' : 'estribacion';
+      if (!bestMountain || level > (bestMountain.heightLevel ?? 0)) {
+        bestMountain = { kind, heightLevel: level };
+      }
+    }
+  }
+  if (bestMountain) return bestMountain;
+
+  // 7. Desiertos (elipses)
+  for (const { def, center } of DESERTS_MAP) {
+    const ex = (x - center.x) / def.rxTiles;
+    const ey = (y - center.y) / def.ryTiles;
+    if (ex * ex + ey * ey <= 1) return { kind: 'desierto', desertId: def.id };
+  }
+
+  if (bestMountain) return bestMountain;
+  return { kind: null };
+}
+
+function distPlainPolyline(x: number, y: number, line: Polyline): number {
+  let best = Infinity;
+  const { pts } = line;
+  for (let i = 1; i < pts.length; i++) {
+    const d = distToSegment(x, y, pts[i - 1].x, pts[i - 1].y, pts[i].x, pts[i].y);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+/** Progreso 0..1 a lo largo de la polilínea más cercano al punto. */
+function progressAlong(line: Polyline, x: number, y: number): number {
+  let bestD = Infinity, bestS = 0;
+  const { pts } = line;
+  for (let i = 1; i < pts.length; i++) {
+    const ax = pts[i - 1].x, ay = pts[i - 1].y, bx = pts[i].x, by = pts[i].y;
+    const segLen = Math.hypot(bx - ax, by - ay);
+    if (segLen < 1) continue;
+    let t = ((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / (segLen * segLen);
+    t = Math.max(0, Math.min(1, t));
+    const px = ax + (bx - ax) * t, py = ay + (by - ay) * t;
+    const d = Math.hypot(x - px, y - py);
+    if (d < bestD) { bestD = d; bestS = line.cum[i - 1] + t * segLen; }
+  }
+  return line.totalLen > 0 ? bestS / line.totalLen : 0;
+}
+
+// ── Bioma "natural" derivado de la geografía (sin semilla de provincia) ─────
+// Útil como capa base: el generador de chunk combina esto con el bioma de la
+// provincia para decidir vegetación/densidad. Ej: una provincia Bosque que cae
+// sobre Taklamakan muestra dunas igualmente (la geografía gana en rasgos duros).
+
+export type NaturalBiome = 'Agua' | 'Nieve' | 'Montaña' | 'Desierto' | 'Pantano' | 'Costa' | 'Estepa' | 'Bosque';
+
+export function naturalBiomeAt(x: number, y: number): NaturalBiome {
+  const g = sampleGeo(x, y);
+  switch (g.kind) {
+    case 'mar': case 'rio': case 'canal': case 'lago': return 'Agua';
+    case 'ribera': return 'Pantano'; // llanura aluvial fértil/húmeda
+    case 'montania_alta': return 'Nieve';
+    case 'montania_media': case 'estribacion': return 'Montaña';
+    case 'desierto': return 'Desierto';
+    default: {
+      // tierra libre: decidir por latitud aproximada + ruido determinista suave
+      const lat = mapLat(y);
+      if (lat > 43) return 'Bosque';            // Manchuria/Norte: taiga
+      if (lat < 24) return 'Bosque';            // Sur tropical
+      const n = hashNoise(x, y);
+      return n > 0.5 ? 'Estepa' : 'Bosque';     // mosaico central
+    }
+  }
+}
+
+function hashNoise(x: number, y: number): number {
+  const rng = mulberry32(stringToHash(`nb_${Math.floor(x / 8)}_${Math.floor(y / 8)}`));
+  return rng();
+}
+
+/** ¿Es este tile impenetrable? (agua profunda, cumbre alta, mar) */
+export function isImpassableGeo(g: GeoSample): boolean {
+  return g.kind === 'mar' || g.kind === 'montania_alta' ||
+    (g.kind === 'rio') || g.kind === 'lago';
+}

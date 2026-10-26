@@ -41,6 +41,39 @@ export class WorldScene extends Phaser.Scene {
     g.destroy();
   }
 
+  /** Roca de montaña: rombo escalonado (más alto que un tile normal). */
+  private createMountainTexture() {
+    const g = this.make.graphics({ x: 0, y: 0 }, false);
+    // cuerpo rocoso
+    g.fillStyle(0x6b7280, 1);
+    g.beginPath(); g.moveTo(32, 4); g.lineTo(60, 26); g.lineTo(32, 44); g.lineTo(4, 26); g.closePath(); g.fillPath();
+    g.fillStyle(0x4b5563, 1);
+    g.beginPath(); g.moveTo(4, 26); g.lineTo(32, 44); g.lineTo(32, 52); g.lineTo(4, 34); g.closePath(); g.fillPath();
+    g.fillStyle(0x374151, 1);
+    g.beginPath(); g.moveTo(60, 26); g.lineTo(32, 44); g.lineTo(32, 52); g.lineTo(60, 34); g.closePath(); g.fillPath();
+    // pico nevado
+    g.fillStyle(0xf1f5f9, 1);
+    g.beginPath(); g.moveTo(32, 4); g.lineTo(42, 16); g.lineTo(32, 22); g.lineTo(22, 16); g.closePath(); g.fillPath();
+    g.generateTexture('tile_montana', 64, 52 + CUBE_HEIGHT);
+    g.destroy();
+  }
+
+  /** Junco/pantano: base verde oscuro con cañas. */
+  private createSwampTexture() {
+    const g = this.make.graphics({ x: 0, y: 0 }, false);
+    g.fillStyle(0x365314, 1);
+    g.beginPath(); g.moveTo(32, 0); g.lineTo(64, 16); g.lineTo(32, 32); g.lineTo(0, 16); g.closePath(); g.fillPath();
+    g.fillStyle(0x1a2e05, 1);
+    g.beginPath(); g.moveTo(0, 16); g.lineTo(32, 32); g.lineTo(32, 32 + CUBE_HEIGHT); g.lineTo(0, 16 + CUBE_HEIGHT); g.closePath(); g.fillPath();
+    g.lineStyle(2, 0x84cc16, 0.8);
+    for (let i = 0; i < 5; i++) {
+      const bx = 14 + i * 9;
+      g.beginPath(); g.moveTo(bx, 18); g.lineTo(bx + 3, 6); g.strokePath();
+    }
+    g.generateTexture('tile_pantano', 64, 32 + CUBE_HEIGHT);
+    g.destroy();
+  }
+
   private createTrees() {
     const gRound = this.make.graphics({ x: 0, y: 0 }, false);
     gRound.fillStyle(0x5c4033, 1); gRound.fillRect(28, 40, 8, 20);
@@ -121,6 +154,8 @@ export class WorldScene extends Phaser.Scene {
     this.createTileTexture('tile_agua', 0x3b82f6, 0x2563eb);
     this.createTileTexture('tile_arena', 0xfcd34d, 0xd97706);
     this.createTileTexture('tile_nieve', 0xf8fafc, 0xcbd5e1);
+    this.createMountainTexture();
+    this.createSwampTexture();
     
     this.createTrees();
     this.createBeastTextures(); 
@@ -130,12 +165,16 @@ export class WorldScene extends Phaser.Scene {
     this.createVignette();
     this.cameras.main.setBackgroundColor('#0f172a'); // Fondo oscuro para la niebla
 
-    this.province = INITIAL_PROVINCES.find(p => p.id === 'prov_shaanxi') as Province || INITIAL_PROVINCES[0];
+    // ── Origen del mundo: el jugador aparece en CHANG'AN (capital de Shaanxi),
+    // ahora anclada a su posición geográfica real proyectada al mapa 1000x1000.
+    const shaanxi = INITIAL_PROVINCES.find(p => p.id === 'prov_shaanxi') as Province || INITIAL_PROVINCES[0];
+    this.province = shaanxi;
+    const origin = (shaanxi as any).coords ?? { x: 580, y: 334 };
     
     this.treeGroup = this.physics.add.staticGroup();
     this.faunaGroup = this.physics.add.group(); 
 
-    // Cargar posición inicial
+    // Cargar posición inicial (relativa AL ORIGEN GEOGRÁFICO de Chang'an)
     let startMapX = 8;
     let startMapY = 8;
     try {
@@ -149,7 +188,9 @@ export class WorldScene extends Phaser.Scene {
       }
     } catch (e) {}
 
-    const startPos = mapToScreen(startMapX, startMapY);
+    const worldX = origin.x + startMapX;
+    const worldY = origin.y + startMapY;
+    const startPos = mapToScreen(worldX, worldY);
     
     // Inicializar Entidades y Managers
     this.player = new PlayerEntity(this, startPos.x, startPos.y + CUBE_HEIGHT);

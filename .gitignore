@@ -1,9 +1,2 @@
 node_modules/
 dist/
-.env
-*.log
-*.zip
-*.psd
-database.sqlite
-*.sqlite
-estructura.txt
