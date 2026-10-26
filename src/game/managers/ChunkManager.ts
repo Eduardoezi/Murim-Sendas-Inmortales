@@ -80,6 +80,19 @@ export class ChunkManager {
 
     tiles.forEach((tile) => {
       const pos = mapToScreen(tile.x, tile.y);
+
+      // Montañas: roca elevada e IMPENETRABLE (obstáculo físico + lógico)
+      if (tile.type === 'montana') {
+        const rock = this.scene.add.image(pos.x, pos.y - 6, 'tile_montana');
+        rock.setOrigin(0.5, 0.28);
+        rock.setDepth(pos.y + 4);
+        objects.push(rock);
+        const tileKey = `${tile.x},${tile.y}`;
+        chunkObstacles.push(tileKey);
+        localObstacles.add(tileKey);
+        return;
+      }
+
       const img = this.scene.add.image(pos.x, pos.y + CUBE_HEIGHT, `tile_${tile.type}`);
       img.setOrigin(0.5, 0);
       img.setDepth(pos.y);
@@ -91,6 +104,8 @@ export class ChunkManager {
         chunkWaterTiles.push(tileKey);
 
         if (tile.waterDepth === 1) img.setTint(0x1e3a8a);
+        // ríos navegables vs canal somero: leve matiz distinto
+        else if (tile.navigable && tile.geoId === 'grand_canal') img.setTint(0x38bdf8);
 
         const rng = mulberry32(stringToHash(`water_${tile.x}_${tile.y}`));
         const tween = this.scene.tweens.add({
@@ -103,6 +118,19 @@ export class ChunkManager {
           delay: rng() * 2000,
         });
         timers.push(tween);
+        return;
+      }
+
+      if (tile.type === 'pantano') {
+        // juncos dispersos sin colisión (caminables, estética húmeda)
+        const rng = mulberry32(stringToHash(`sw_${chunkX}_${chunkY}_${tile.x}_${tile.y}`));
+        if (rng() < 0.25) {
+          const reed = this.scene.add.image(pos.x, pos.y + CUBE_HEIGHT, 'tree_dead');
+          reed.setScale(0.35);
+          reed.setAlpha(0.7);
+          reed.setDepth(pos.y + 1);
+          objects.push(reed);
+        }
         return;
       }
 
