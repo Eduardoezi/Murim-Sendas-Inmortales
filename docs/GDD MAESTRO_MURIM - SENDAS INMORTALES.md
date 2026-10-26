@@ -1008,4 +1008,112 @@ Aquí tienes el documento estructurado que puedes copiar y pegar directamente en
 
 Con esto en tu GDD, tienes la tranquilidad de que la idea está documentada y no se perderá. Cuando contrates a un artista o tengas presupuesto para comprar assets, tendrás una guía exacta de lo que necesitas pedir.
 
-**¿Qué te parece si ahora volvemos al juego?** Quedamos en que íbamos a poblar el mapa de Phaser con los POIs (la Secta, la Ciudad, etc.) y hacer que el jugador pueda interactuar con ellos. ¿Damos ese paso?
+Perfecto. Esta es una decisión de arquitectura de nivel profesional. Vamos a documentar esta visión en el GDD para que quede como el estándar definitivo del proyecto.
+
+He rescatado las matemáticas del archivo que me compartiste, las he adaptado a la estética 2D isométrica de Phaser (explicando cómo usar los ángulos en sprites 2D) y he estructurado todo para que puedas copiarlo y pegarlo directamente en tu `GDD_MAESTRO_V3_RESUMEN.md`.
+
+***
+
+### 📥 Sección 15 o Apéndice Técnico
+
+```markdown
+## 🧬 SISTEMA DE ESQUELETO BIOMECÁNICO Y PAPERDOLL (VISIÓN FUTURA)
+
+**Estado:** Documentado para Fase 1.5 (Post-Vertical Slice).
+**Objetivo:** Implementar un sistema de animación hiper-customizable usando un esqueleto matemático (Cinemática Inversa) que controle tanto un Maniquí 3D (para la UI de Meridianos) como fragmentos de sprites 2D (Paperdoll) en el mapa isométrico.
+
+### 15.1 Filosofía del Sistema
+En lugar de dibujar animaciones completas (spritesheets pesados), dividiremos el personaje en piezas anatómicas (cabeza, cuello, torso, hombros, brazo_sup, codos, brazo_inf, pelvis, muslo, rodillas, pantorrilla, tobillos, pies.). Un "esqueleto invisible" calculará los ángulos matemáticos de las articulaciones (cuello, hombros, codos, rodillas, tobillos) y Phaser rotará cada pieza de arte según esos ángulos. Esto permite equipar armaduras, túnicas y armas de forma modular infinita.
+
+### 15.2 Dualidad de Renderizado (React vs. Phaser)
+*   **Instancia UI (React + Three.js):** Usaremos un Maniquí 3D de madera procedural (generado con primitivas geométricas). Su función principal será visualizar la **Progresión de Meridianos** (el maniquí se iluminará en el Pulmón, Corazón, etc., a medida que el jugador avance).
+*   **Instancia Mundo (Phaser 3):** Usaremos el mismo esqueleto matemático, pero en lugar de dibujar 3D, aplicaremos los ángulos de rotación a fragmentos de imágenes 2D (Paperdoll).
+
+### 15.3 Las Matemáticas del Esqueleto (Cinemática Inversa)
+Para evitar motores de físicas pesados, usaremos **Cinemática Inversa Analítica (IK de 2 huesos)** basada en la Ley de los Cosenos. Esta función se implementará en `src/core/utils/biomechanics.ts`.
+
+**Contratos de Tipos (Añadir a `player.types.ts`):**
+```typescript
+export interface Vector3D { x: number; y: number; z: number; }
+export interface BoneRotation { pitch: number; yaw: number; roll: number; }
+
+export interface MannequinJoint {
+  id: string;                  
+  position: Vector3D;          
+  rotation: BoneRotation;      
+  limits: {                    
+    minPitch: number; maxPitch: number;
+    minYaw: number; maxYaw: number;
+  };
+}
+
+export interface ProceduralMannequin {
+  esferas: { cabeza: any; manos: any; pies: any; };
+  esferoides: { torso: any; pelvis: any; };
+  cilindros: { 
+    cuello: any;
+    brazoIzquierdo: MannequinJoint; brazoDerecho: MannequinJoint;
+    antebrazoIzquierdo: MannequinJoint; antebrazoDerecho: MannequinJoint;
+    musloIzquierdo: MannequinJoint; musloDerecho: MannequinJoint;
+  };
+  woodGrainSeed: number; // Determinismo para las vetas de madera (Mulberry32)
+}
+
+export interface PlayerAppearance {
+  // ... campos anteriores
+  mannequinStructure?: ProceduralMannequin; 
+}
+```
+
+**Función Matemática Base (Ley de Cosenos para IK):**
+```typescript
+import { Vector3D, BoneRotation } from '../types/player.types';
+
+export function solveTwoBoneIK(
+  origin: Vector3D, target: Vector3D, lengthUpper: number, lengthLower: number
+): { upperRotation: BoneRotation; lowerRotation: BoneRotation; reached: boolean } {
+  
+  const targetRel = { x: target.x - origin.x, y: target.y - origin.y, z: target.z - origin.z };
+  const dist = Math.sqrt(targetRel.x**2 + targetRel.y**2 + targetRel.z**2);
+  const maxLength = lengthUpper + lengthLower;
+  const targetDist = dist > maxLength ? maxLength * 0.999 : dist;
+
+  // Ley de Cosenos
+  const cosLower = (targetDist**2 - lengthUpper**2 - lengthLower**2) / (-2 * lengthUpper * lengthLower);
+  const cosUpperAdjacent = (lengthLower**2 - lengthUpper**2 - targetDist**2) / (-2 * lengthUpper * targetDist);
+
+  const clamp = (val: number) => Math.max(-1, Math.min(1, val));
+  const lowerAngleRad = Math.acos(clamp(cosLower));
+  const upperAngleOffsetRad = Math.acos(clamp(cosUpperAdjacent));
+
+  const pitchToTarget = Math.atan2(targetRel.y, Math.sqrt(targetRel.x**2 + targetRel.z**2));
+  const yawToTarget = Math.atan2(targetRel.x, targetRel.z);
+
+  return {
+    upperRotation: { pitch: pitchToTarget - upperAngleOffsetRad, yaw: yawToTarget, roll: 0 },
+    lowerRotation: { pitch: Math.PI - lowerAngleRad, yaw: 0, roll: 0 },
+    reached: dist <= maxLength
+  };
+}
+```
+
+### 15.4 Animaciones Procedurales (Trigonométricas)
+Las animaciones (caminar, correr, saltar, agacharse) no serán archivos `.fbx` ni `.png`. Serán funciones `Math.sin` y `Math.cos` ligadas al `time` (reloj de Phaser). 
+*   **Idle (Meditación/Reposo):** El torso sube y baja sutilmente `Math.sin(time * 2) * 0.02`.
+*   **Caminar:** Las piernas oscilan en oposición. `piernaIzq = Math.sin(time * 5) * 0.4`, `piernaDer = -Math.sin(time * 5) * 0.4`.
+*   **Correr:** Aumenta la frecuencia y amplitud. El torso se inclina hacia adelante.
+*   **Agacharse:** Los muslos rotan hacia adelante (`pitch: -0.9`) y las rodillas se flexionan (`pitch: -1.4`). El eje Y del esqueleto baja.
+
+### 15.5 Desafíos de Implementación (A resolver en el prototipo)
+1.  **Pivots (Puntos de Anclaje):** El artista debe dibujar el `brazo.png` recto, sabiendo que el eje de rotación (el codo) estará en una coordenada exacta (ej: `x: 32, y: 64` de la imagen).
+2.  **Z-Sorting (Orden de Capas):** En isométrico 2D, si el personaje está de espaldas, el brazo derecho se dibuja detrás del torso; si está de frente, se dibuja delante. Se usará un sistema de `depth` dinámico basado en el ángulo `yaw` del esqueleto.
+3.  **Perspectiva Aplanada:** La matemática 3D calcula ángulos reales. Para Phaser 2D, tendremos que "escalar" los ángulos en el eje Y (`escalaY = 0.5`) para que los movimientos se vean naturales en la vista isométrica.
+
+### 15.6 Plan de Prototipado (Próximos pasos)
+Antes de pedir arte definitivo, construiremos un **"Stickman Matemático"**:
+1.  Crear rectángulos de colores (brazos, piernas, torso).
+2.  Aplicarles las funciones `solveTwoBoneIK` y `getMovementAngles`.
+3.  Hacer que el Stickman camine y esquive árboles en Phaser usando el pathfinding A* ya existente.
+```
+
+***

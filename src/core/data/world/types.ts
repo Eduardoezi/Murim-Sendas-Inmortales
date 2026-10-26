@@ -27,3 +27,14 @@ export interface BiomeConfig {
   availableFlora: string[];
   description: string;
 }
+
+export interface Province {
+  id: string;
+  name: string;
+  biome: BiomeType;
+}
+
+export interface Point {
+  x: number;
+  y: number;
+}

@@ -6,20 +6,21 @@ export interface Faction {
   name: string;
   type: FactionType;
   alignment: Alignment;
-  element: string; // Fuego, Agua, etc.
+  element: string;
   description: string;
-  powerLevel: number; // 1 a 10
-  territory: string; // Provincia donde operan
+  powerLevel: number;
+  territory: string;
 }
 
 export interface Beast {
-  isAquatic: boolean;
+  /** Opcional: si no se define, se asume terrestre. */
+  isAquatic?: boolean;
   id: string;
   name: string;
   tier: 'Mutante' | 'Desolada' | 'Ancestral' | 'Primordial';
   habitat: string;
   keyMaterial: string;
-  dangerLevel: number; // 1 a 10
+  dangerLevel: number;
 }
 
 export interface Flora {

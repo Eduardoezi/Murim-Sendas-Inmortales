@@ -1,5 +1,5 @@
 // src/core/data/world/seeds/buildingTemplates.ts
-import { BiomeType } from '../seeds/biomes';
+import { BiomeType } from '../types';
 
 export interface BuildingTemplate {
   type: string;
