@@ -8,12 +8,22 @@ import { AuthPage } from './ui/screens/AuthPage';
 import { CreationPage } from './ui/screens/CreationPage';
 import { AdminPage } from './ui/screens/AdminPage';
 
+import { AdminLayout } from './ui/screens/admin/AdminLayout';
+import { Dashboard } from './ui/screens/admin/Dashboard';
+
+// Componente temporal para las rutas que iremos creando
+const UnderConstruction = ({ title }: { title: string }) => (
+  <div className="text-center py-20">
+    <h1 className="font-cinzel text-3xl text-amber-500 mb-4">{title}</h1>
+    <p className="text-stone-500">Este módulo de administración estará disponible pronto.</p>
+  </div>
+);
+
 export default function App() {
   const { token } = useAuthStore();
   const { playerId, setPlayer } = usePlayerStore();
-  const [isLoading, setIsLoading] = useState(true); // Estado de carga inicial
+  const [isLoading, setIsLoading] = useState(true);
 
-  // ✅ EFECTO MÁGICO: Al recargar, busca al personaje en el servidor
   useEffect(() => {
     const fetchPlayerData = async () => {
       if (!token) {
@@ -28,7 +38,6 @@ export default function App() {
         const data = await res.json();
 
         if (data.success && data.player) {
-          // Restauramos el personaje en Zustand
           const p = data.player;
           const calculatedHp = 50 + (p.stats_json.constitucion * 12);
           
@@ -55,7 +64,6 @@ export default function App() {
     fetchPlayerData();
   }, [token, setPlayer]);
 
-  // Pantalla de carga (evita que te mande a /create por un segundo)
   if (isLoading) {
     return (
       <div className="min-h-screen bg-[#05070c] flex items-center justify-center text-amber-500 font-cinzel">
@@ -77,6 +85,18 @@ export default function App() {
         <Route path="/hub" element={
           token ? (playerId ? <AdminPage /> : <Navigate to="/create" />) : <Navigate to="/auth" />
         } />
+
+        {/* --- PORTAL DE ADMINISTRACIÓN --- */}
+        <Route path="/admin" element={<AdminLayout />}>
+          <Route index element={<Dashboard />} />
+          <Route path="players" element={<UnderConstruction title="Gestión de Jugadores" />} />
+          <Route path="world" element={<UnderConstruction title="Mundo y POIs" />} />
+          <Route path="bestiary" element={<UnderConstruction title="Fauna y Flora" />} />
+          <Route path="factions" element={<UnderConstruction title="Facciones" />} />
+          <Route path="debug" element={<UnderConstruction title="Depuración" />} />
+          <Route path="logs" element={<UnderConstruction title="Logs del Servidor" />} />
+          <Route path="settings" element={<UnderConstruction title="Configuración" />} />
+        </Route>
       </Routes>
     </BrowserRouter>
   );
