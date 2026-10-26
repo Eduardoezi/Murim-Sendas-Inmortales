@@ -231,3 +231,27 @@ Cuando trabajes con DeepSeek, Claude, ChatGPT o cualquier modelo gratuito, **cop
   - Servidor Express + SQLite con guardado autoritativo del estado.
   - Combate estadístico contra 1 tipo de bestia en tiempo real con advertencia previa de victoria.
   - Economía de mercado básica en ciudad y alforja espiritual.
+
+
+## 📝 REGISTRO DE DESARROLLO: SESIÓN DE MUNDO Y FAUNA
+
+**Fecha:** Sesión actual de desarrollo.
+**Objetivo:** Implementar variedad de árboles, poblar el mundo con fauna y mejorar el río.
+
+### 🏆 ACIERTOS (Lo que SÍ se completó y funciona)
+1. **Pathfinding (A*) Optimizado:** Se solucionó el cuelgue del navegador ("Page Unresponsive") limitando las iteraciones del algoritmo a 4000 y usando un `Map` para búsquedas en O(1). El personaje esquiva obstáculos fluidamente sin colgar el juego.
+2. **Variedad de Árboles:** Se implementaron 4 tipos de árboles (Roble, Pino, Palmera, Árbol Muerto). Se añadió variación de escala (0.85x a 1.15x) y volteo horizontal (FlipX) determinista para romper la monotonía visual.
+3. **Distribución de Biomas:** Las palmeras ahora aparecen cerca del agua/arena, los pinos en zonas normales y nieve, y los árboles muertos de forma esporádica.
+4. **Renderizado del Río (Estilo Cuadrícula):** Se estableció el río con capas de Arena (orilla), Agua (superficial) y Agua Profunda (tinte azul oscuro). *Se decidió mantener el estilo "a cuadros" (tile-based) porque la versión de bordes suaves rompía la armonía visual del resto del mapa.*
+5. **Generador de Fauna Base:** Se creó `faunaGenerator.ts`, que utiliza PRNG (Mulberry32) para poblar los chunks con animales basados en el bioma de la provincia.
+6. **Generador de Asentamientos:** Se estructuró la lógica de `settlement.ts` y `buildingGenerator.ts` (POIs) lista para ser renderizada en el mapa.
+
+### 🚧 DEUDAS TÉCNICAS Y PENDIENTES (Para retomar otro día)
+1. **Suavidad del Río (Bordes):** Intentamos usar `Phaser.Graphics` con curvas seno para hacer el río suave, pero dejaba agujeros negros o rompía la estética isométrica. **Pendiente:** Investigar *Shaders* personalizados o un *Tileset* de agua de 47 piezas (Auto-tiling) para lograr bordes perfectos sin salir de la cuadrícula.
+2. **Flujo y Espuma del Agua:** Las animaciones de opacidad y tintes no se aprecian bien en las capturas. **Pendiente:** Implementar un `Spritesheet` animado para el agua que muestre el movimiento, espuma y reflejos.
+3. **Fauna Acuática y Chapoteos:** Aunque se añadió la lógica en `faunaGenerator.ts` para identificar animales acuáticos, no se lograron visualizar los saltos ni los anillos de chapoteo en el agua. **Pendiente:** Revisar las capas de profundidad (Depth) de los animales sumergidos y crear un sprite real de "Splash".
+4. **Nadar y Pescar:** **Pendiente:** Requiere una nueva Máquina de Estados (State Machine) para el jugador (caminar -> nadar), animaciones de nado, y un sistema de UI (React) para el minijuego de pesca.
+5. **Conexión POIs (EventBus):** El mapa aún no genera los edificios (Sectas, Ciudades) ni pausa el juego para abrir los menús en React.
+
+### ➡️ PRÓXIMO PASO INMEDIATO
+Dejar el agua en pausa y comenzar con la **Conexión Mapa-Menús (EventBus)** y la **Generación de POIs (Edificios/Ciudades)** usando las semillas que ya tenemos listas.

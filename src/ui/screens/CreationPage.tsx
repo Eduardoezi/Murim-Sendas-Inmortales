@@ -102,8 +102,8 @@ export const CreationPage = () => {
       if (data.success) {
         const calculatedHp = 50 + (finalStats.constitucion * 12);
         
-        setPlayer({ 
-          playerId: `player_${Date.now()}`, 
+      setPlayer({ 
+          playerId: `player_${Date.now()}`, // O el ID real que devuelva el backend
           name, 
           gender,
           birthdate: birthDate,

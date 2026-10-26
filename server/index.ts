@@ -68,14 +68,21 @@ app.get('/api/player/me', (req, res) => {
   const decoded = verifyToken(authHeader.split(' ')[1]);
   if (!decoded) return res.status(401).json({ success: false, message: 'Token inválido' });
 
-  // ✅ AÑADIDO: any para evitar el error de TypeScript
+  // ✅ any para evitar el error de TypeScript
   const player: any = db.prepare('SELECT * FROM players WHERE user_id = ?').get(decoded.userId);
   
   if (!player) return res.json({ success: true, player: null });
 
-  res.json({ success: true, player: { ...player, stats_json: JSON.parse(player.stats_json) } });
+  // Devolvemos el objeto con los datos parseados
+  res.json({ 
+    success: true, 
+    player: { 
+      ...player, 
+      stats_json: JSON.parse(player.stats_json),
+      appearance_json: player.appearance_json ? JSON.parse(player.appearance_json) : null
+    } 
+  });
 });
-
 const PORT = 3001;
 app.listen(PORT, () => {
   console.log(`Servidor Backend corriendo en http://localhost:${PORT}`);
