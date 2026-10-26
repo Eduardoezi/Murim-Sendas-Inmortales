@@ -7,6 +7,7 @@ import { ChunkManager, screenToMap } from '../managers/ChunkManager';
 import { PlayerEntity } from '../entities/PlayerEntity';
 import { BeastEntity } from '../entities/BeastEntity';
 import { MinimapSystem } from '../systems/MinimapSystem';
+import { stepGeoBudget } from '../../core/data/world/generators/geoTileCache';
 
 const TILE_WIDTH = 64;
 const TILE_HEIGHT = 32;
@@ -284,7 +285,11 @@ export class WorldScene extends Phaser.Scene {
   }
 
   update(time: number): void {
-  // 0. Minimapa (O(1): blit solo al cruzar tile + iconos baratos)
+  // 0. Caché de terreno: resolver misses pendientes con presupuesto de 2.5 ms
+  //    por frame (evita congelar el hilo principal).
+  stepGeoBudget();
+
+  // 0b. Minimapa (O(1): blit solo al cruzar tile + iconos baratos)
   if (this.minimap) this.minimap.update();
 
   // 1. Jugador

@@ -9,7 +9,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { stringToHash } from '../../../utils/prng';
 import { BiomeType } from '../types';
-import { sampleGeo, naturalBiomeAt } from './geoSampler';
+import { sampleGeoCached, getBiomeCached } from './geoTileCache';
 
 export type TileType = 'hierba' | 'agua' | 'arena' | 'nieve' | 'montana' | 'pantano';
 
@@ -62,7 +62,8 @@ function biomeVegetation(biome: BiomeType): number {
 
 // ── MODO GEOGRÁFICO ──────────────────────────────────────────────────────────
 function geoTileFor(mapX: number, mapY: number, provinceBiome: BiomeType, seedNum: number): Tile {
-  const g = sampleGeo(mapX, mapY);
+  // CACHE: cada tile se muestrea una sola vez de por vida (fix lag carga de chunks)
+  const g = sampleGeoCached(mapX, mapY);
   const base: Tile = { x: mapX, y: mapY, type: 'hierba', density: 0, isEdgeWater: false, isNearWater: false, waterDepth: 0 };
 
   switch (g.kind) {
@@ -91,7 +92,7 @@ function geoTileFor(mapX: number, mapY: number, provinceBiome: BiomeType, seedNu
   }
 
   // Tierra libre: usar bioma natural derivado de latitud/ruido + modulador provincial
-  const nat = naturalBiomeAt(mapX, mapY);
+  const nat = getBiomeCached(mapX, mapY);
   let type: TileType = 'hierba';
   if (nat === 'Desierto') type = 'arena';
   else if (nat === 'Nieve') type = 'nieve';
@@ -104,7 +105,7 @@ function geoTileFor(mapX: number, mapY: number, provinceBiome: BiomeType, seedNu
   // ¿vecino agua? (para palmeras/juncos en ChunkManager)
   const near = [-1, 0, 1].some((dx) => [-1, 0, 1].some((dy) => {
     if (dx === 0 && dy === 0) return false;
-    const n = sampleGeo(mapX + dx, mapY + dy);
+    const n = sampleGeoCached(mapX + dx, mapY + dy);
     return n.kind === 'rio' || n.kind === 'lago' || n.kind === 'mar' || n.kind === 'canal';
   }));
 
