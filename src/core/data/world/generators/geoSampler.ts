@@ -10,6 +10,7 @@ import { Point } from '../types';
 import {
   geoToMap, MAIN_RIVERS, MAIN_LAKES, MAIN_PEAKS, MAIN_RANGES,
   MAIN_DESERTS, SEA_POLYGON_GEO, GRAND_CANAL_GEO, RiverDef,
+  LakeDef, MountainPeakDef, RangeDef, DesertDef,
 } from '../seeds/geoChina';
 import { stringToHash, mulberry32 } from '../../../utils/prng';
 import { mapLat } from '../seeds/geoChina';
@@ -94,6 +95,72 @@ function pointInPolygon(x: number, y: number, poly: Point[]): boolean {
   return inside;
 }
 
+// ── rejilla de baldosas de proximidad (optimización O(1) amortizado) ─────────
+// sampleGeo crudo recorría TODOS los rasgos por tile (~60 segmentos de ríos
+// con serpenteo → ~13 µs c/u). Precomputamos una malla donde cada celda sabe
+// qué rasgos pueden tocarla (bbox + margen); la consulta solo evalúa esos.
+const TILE = 24;
+const GTW = Math.ceil(1000 / TILE), GTH = Math.ceil(1000 / TILE);
+
+type GeoCand =
+  | { t: 'mar' }
+  | { t: 'rio'; def: RiverDef; line: Polyline; seedNum: number }
+  | { t: 'canal' }
+  | { t: 'lago'; def: LakeDef; center: Point }
+  | { t: 'peak'; def: MountainPeakDef; center: Point }
+  | { t: 'range'; def: RangeDef; line: Polyline }
+  | { t: 'desert'; def: DesertDef; center: Point };
+
+const candGrid: GeoCand[][] = Array.from({ length: GTW * GTH }, () => []);
+
+function markBox(c: GeoCand, minX: number, maxX: number, minY: number, maxY: number): void {
+  const gx0 = Math.max(0, Math.floor(minX / TILE)), gx1 = Math.min(GTW - 1, Math.floor(maxX / TILE));
+  const gy0 = Math.max(0, Math.floor(minY / TILE)), gy1 = Math.min(GTH - 1, Math.floor(maxY / TILE));
+  for (let gy = gy0; gy <= gy1; gy++)
+    for (let gx = gx0; gx <= gx1; gx++) candGrid[gy * GTW + gx].push(c);
+}
+
+function polylineBBox(line: Polyline): [number, number, number, number] {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of line.pts) {
+    if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
+    if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
+  }
+  return [x0, x1, y0, y1];
+}
+
+function buildCandGrid(): void {
+  // Mar: su bbox en el mapa (el test exacto sigue siendo pointInPolygon)
+  {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const p of SEA_POLY_MAP) {
+      if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
+      if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
+    }
+    markBox({ t: 'mar' }, x0, x1, y0, y1);
+  }
+  for (const { def, line } of RIVER_PATHS) {
+    const [x0, x1, y0, y1] = polylineBBox(line);
+    markBox({ t: 'rio', def, line, seedNum: (stringToHash(def.id) % 1000) / 97.3 },
+      x0 - 20, x1 + 20, y0 - 20, y1 + 20); // margen: serpenteo (±13) + ribera (+2)
+  }
+  {
+    const [x0, x1, y0, y1] = polylineBBox(CANAL_LINE);
+    markBox({ t: 'canal' }, x0 - 4, x1 + 4, y0 - 4, y1 + 4);
+  }
+  for (const { def, center } of LAKES_MAP)
+    markBox({ t: 'lago', def, center }, center.x - def.rxTiles, center.x + def.rxTiles, center.y - def.ryTiles, center.y + def.ryTiles);
+  for (const { def, center } of PEAKS_MAP)
+    markBox({ t: 'peak', def, center }, center.x - def.radiusTiles, center.x + def.radiusTiles, center.y - def.radiusTiles, center.y + def.radiusTiles);
+  for (const { def, line } of RANGE_LINES) {
+    const [x0, x1, y0, y1] = polylineBBox(line);
+    markBox({ t: 'range', def, line }, x0 - def.thicknessTiles, x1 + def.thicknessTiles, y0 - def.thicknessTiles, y1 + def.thicknessTiles);
+  }
+  for (const { def, center } of DESERTS_MAP)
+    markBox({ t: 'desert', def, center }, center.x - def.rxTiles, center.x + def.rxTiles, center.y - def.ryTiles, center.y + def.ryTiles);
+}
+buildCandGrid();
+
 // ── API pública ──────────────────────────────────────────────────────────────
 
 export type GeoFeatureKind =
@@ -115,50 +182,77 @@ export interface GeoSample {
  * Coste: O(#ríos × #tramos) ≈ ~60 ops — despreciable frente a render.
  */
 export function sampleGeo(x: number, y: number): GeoSample {
-  // 1. Mar (polígono este/sureste)
-  if (pointInPolygon(x, y, SEA_POLY_MAP)) return { kind: 'mar' };
+  // Fast-path por rejilla de proximidad: si la celda no tiene ningún rasgo
+  // cerca (bbox + margen), es tierra libre sin evaluar geometría.
+  if (x < 0 || y < 0 || x >= 1000 || y >= 1000) return { kind: null };
+  const cands = candGrid[Math.floor(y / TILE) * GTW + Math.floor(x / TILE)];
+  if (cands.length === 0) return { kind: null };
+  let hasDesert = false;
 
-  // 2. Ríos (con serpenteo determinista por río)
-  for (const { def, line } of RIVER_PATHS) {
-    const seedNum = (stringToHash(def.id) % 1000) / 97.3;
-    const d = distToRiver(x, y, line, seedNum);
-    // ancho crece hacia la desembocadura (estuario más ancho)
-    const taper = 0.7 + 0.6 * (d >= 0 ? progressAlong(line, x, y) : 0); // 0 cabecera → 1 boca
-    const halfW = (def.width / 2) * taper;
-    if (d <= halfW) {
-      const prog = progressAlong(line, x, y);
-      const distFromMouthTiles = (1 - prog) * line.totalLen;
-      return {
-        kind: 'rio',
-        riverId: def.id,
-        navigable: !!def.navigableFromMouth && distFromMouthTiles <= def.navigableFromMouth,
-      };
+  for (const c of cands) {
+    switch (c.t) {
+      // 1. Mar (polígono este/sureste)
+      case 'mar':
+        if (pointInPolygon(x, y, SEA_POLY_MAP)) return { kind: 'mar' };
+        break;
+
+      // 2. Ríos (con serpenteo determinista por río)
+      case 'rio': {
+        const d = distToRiver(x, y, c.line, c.seedNum);
+        // ancho crece hacia la desembocadura (estuario más ancho)
+        const taper = 0.7 + 0.6 * (d >= 0 ? progressAlong(c.line, x, y) : 0); // 0 cabecera → 1 boca
+        const halfW = (c.def.width / 2) * taper;
+        if (d <= halfW) {
+          const prog = progressAlong(c.line, x, y);
+          const distFromMouthTiles = (1 - prog) * c.line.totalLen;
+          return {
+            kind: 'rio',
+            riverId: c.def.id,
+            navigable: !!c.def.navigableFromMouth && distFromMouthTiles <= c.def.navigableFromMouth,
+          };
+        }
+        if (d <= halfW + 2) return { kind: 'ribera', riverId: c.def.id }; // franja de arena/húmeda
+        break;
+      }
+
+      // 3. Gran Canal (recto, estrecho)
+      case 'canal':
+        if (distPlainPolyline(x, y, CANAL_LINE) <= 3) return { kind: 'canal', navigable: true };
+        break;
+
+      // 4. Lagos (elipses)
+      case 'lago': {
+        const ex = (x - c.center.x) / c.def.rxTiles;
+        const ey = (y - c.center.y) / c.def.ryTiles;
+        if (ex * ex + ey * ey <= 1) return { kind: 'lago', lakeId: c.def.id };
+        break;
+      }
+
+      // 5/6. Montañas: se evalúan al final para respetar la precedencia original
+      case 'peak':
+      case 'range':
+        break;
+
+      // 7. Desiertos (elipses) — solo si no hay montaña (precedencia original)
+      case 'desert': {
+        const ex = (x - c.center.x) / c.def.rxTiles;
+        const ey = (y - c.center.y) / c.def.ryTiles;
+        if (ex * ex + ey * ey <= 1) { hasDesert = true; }
+        break;
+      }
     }
-    if (d <= halfW + 2) return { kind: 'ribera', riverId: def.id }; // franja de arena/húmeda
   }
 
-  // 3. Gran Canal (recto, estrecho)
-  {
-    const d = distPlainPolyline(x, y, CANAL_LINE);
-    if (d <= 3) return { kind: 'canal', navigable: true };
-  }
-
-  // 4. Lagos (elipses)
-  for (const { def, center } of LAKES_MAP) {
-    const ex = (x - center.x) / def.rxTiles;
-    const ey = (y - center.y) / def.ryTiles;
-    if (ex * ex + ey * ey <= 1) return { kind: 'lago', lakeId: def.id };
-  }
-
-  // 5. Picos montañosos (círculos con anillos de altura)
+  // Picos montañosos (círculos con anillos de altura)
   let bestMountain: GeoSample | null = null;
-  for (const { def, center } of PEAKS_MAP) {
-    const d = Math.hypot(x - center.x, y - center.y);
-    if (d <= def.radiusTiles) {
-      const ratio = d / def.radiusTiles; // 0 centro → 1 borde
+  for (const c of cands) {
+    if (c.t !== 'peak') continue;
+    const d = Math.hypot(x - c.center.x, y - c.center.y);
+    if (d <= c.def.radiusTiles) {
+      const ratio = d / c.def.radiusTiles; // 0 centro → 1 borde
       const level: 1 | 2 | 3 =
-        def.heightLevel === 3 ? (ratio < 0.45 ? 3 : ratio < 0.75 ? 2 : 1)
-        : def.heightLevel === 2 ? (ratio < 0.55 ? 2 : 1)
+        c.def.heightLevel === 3 ? (ratio < 0.45 ? 3 : ratio < 0.75 ? 2 : 1)
+        : c.def.heightLevel === 2 ? (ratio < 0.55 ? 2 : 1)
         : 1;
       const kind: GeoFeatureKind = level === 3 ? 'montania_alta' : level === 2 ? 'montania_media' : 'estribacion';
       if (!bestMountain || level > (bestMountain.heightLevel ?? 0)) {
@@ -167,15 +261,16 @@ export function sampleGeo(x: number, y: number): GeoSample {
     }
   }
 
-  // 6. Cordilleras lineales
-  for (const { def, line } of RANGE_LINES) {
-    const d = distPlainPolyline(x, y, line);
-    if (d <= def.thicknessTiles / 2) {
-      const half = def.thicknessTiles / 2;
+  // Cordilleras lineales
+  for (const c of cands) {
+    if (c.t !== 'range') continue;
+    const d = distPlainPolyline(x, y, c.line);
+    if (d <= c.def.thicknessTiles / 2) {
+      const half = c.def.thicknessTiles / 2;
       const ratio = d / half;
       const level: 1 | 2 | 3 =
-        def.heightLevel === 3 ? (ratio < 0.4 ? 3 : ratio < 0.7 ? 2 : 1)
-        : def.heightLevel === 2 ? (ratio < 0.5 ? 2 : 1)
+        c.def.heightLevel === 3 ? (ratio < 0.4 ? 3 : ratio < 0.7 ? 2 : 1)
+        : c.def.heightLevel === 2 ? (ratio < 0.5 ? 2 : 1)
         : 1;
       const kind: GeoFeatureKind = level === 3 ? 'montania_alta' : level === 2 ? 'montania_media' : 'estribacion';
       if (!bestMountain || level > (bestMountain.heightLevel ?? 0)) {
@@ -185,14 +280,7 @@ export function sampleGeo(x: number, y: number): GeoSample {
   }
   if (bestMountain) return bestMountain;
 
-  // 7. Desiertos (elipses)
-  for (const { def, center } of DESERTS_MAP) {
-    const ex = (x - center.x) / def.rxTiles;
-    const ey = (y - center.y) / def.ryTiles;
-    if (ex * ex + ey * ey <= 1) return { kind: 'desierto', desertId: def.id };
-  }
-
-  if (bestMountain) return bestMountain;
+  if (hasDesert) return { kind: 'desierto' };
   return { kind: null };
 }
 
