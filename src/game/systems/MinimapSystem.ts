@@ -17,7 +17,7 @@
 import Phaser from 'phaser';
 import { MinimapConfig, MINIMAP_DEFAULTS } from '../config/minimapConfig';
 import { isImpassableGeo } from '../../core/data/world/generators/geoSampler';
-import { getBiomeCached, preloadGeoRowsAsync, sampleGeoCached } from '../../core/data/world/generators/geoTileCache';
+import { getBiomeCached, preloadGeoRowsAsync, preloadGeoWindow, sampleGeoCached } from '../../core/data/world/generators/geoTileCache';
 import { GeoPoi, getWorldPois } from '../../core/data/world/geoPois';
 import { WORLD_SEED } from '../../core/data/world/seeds/worldSeed';
 
@@ -309,13 +309,19 @@ export class MinimapSystem {
     // precarga). El minimapa aparece casi de inmediato: primero se pinta la
     // franja del jugador y luego el resto en background, sin bloquear frames.
     const playerRow = Math.floor(this.opts.getPlayerTile().y);
+    // Ventana del jugador resuelta ANTES de iniciar (preloadGeoWindow es un
+    // barrido secuencial ~10x más rápido que consultas dispersas: ~5 ms para
+    // r=90). Así el recorte inicial nunca se pinta provisionalmente 'Estepa'.
+    const pp = this.opts.getPlayerTile();
+    preloadGeoWindow(pp.x, pp.y, 96);
     const ROWS_PER_SLICE = 40;
     preloadGeoRowsAsync(
       ROWS_PER_SLICE,
       (_y0, _y1) => {
         if (this.destroyed) return;
         this.paintRegion(0, GRID.width - 1, _y0, _y1);
-        // En cuanto la franja del jugador existe, muestra el recorte.
+        // Refresca el recorte en cuanto existe (el tile ya está cargado con
+        // la ventana del jugador pre-resuelta arriba).
         if (!this.cropTex && _y0 <= playerRow && playerRow <= _y1) {
           this.blitCrop();
         } else if (this.cropTex) {
