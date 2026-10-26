@@ -9,7 +9,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { stringToHash } from '../../../utils/prng';
 import { BiomeType } from '../types';
-import { sampleGeo, naturalBiomeAt } from './geoSampler';
 import { sampleGeoCached, getBiomeCached } from './geoTileCache';
 
 export type TileType = 'hierba' | 'agua' | 'arena' | 'nieve' | 'montana' | 'pantano';
