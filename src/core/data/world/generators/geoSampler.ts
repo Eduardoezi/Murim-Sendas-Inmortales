@@ -254,3 +254,65 @@ export function isImpassableGeo(g: GeoSample): boolean {
   return g.kind === 'mar' || g.kind === 'montania_alta' ||
     (g.kind === 'rio') || g.kind === 'lago';
 }
+
+/** ¿Es un buen solar para construir/asentarse? (tierra firme, no escarpada) */
+export function isBuildableGeo(g: GeoSample): boolean {
+  if (isImpassableGeo(g)) return false;
+  if (g.kind === 'montania_media') return false; // laderas: sin solares
+  return true; // tierra libre, riberas, estribaciones, desierto (oasis), canal-ribera
+}
+
+// ── Desplazamiento seguro de capitales / spawns ──────────────────────────────
+// Algunas capitales históricas caen exactamente sobre el tramo de un río
+// (ciudades fluviales legítimas: Nanjing en el Yangtsé, Nanning en el Zhu
+// Jiang, Yinchuan en el oasis del Amarillo). Para spawn/asentamientos
+// buscamos el tile transitable más cercano con una BFS determinista.
+
+interface SafeOffset { dx: number; dy: number; distTiles: number }
+
+const safeOffsetCache = new Map<string, SafeOffset>();
+
+/**
+ * Devuelve el offset (en tiles) desde (x,y) hasta el solar construible más
+ * cercano, buscando en anillos concéntricos (BFS por capas). Determinista:
+ * el orden de vecinos es fijo, así el resultado siempre es el mismo.
+ * Clave opcional para cachear por punto (p. ej. id de provincia).
+ */
+export function findSafeOffset(x: number, y: number, maxRadius = 12, cacheKey?: string): SafeOffset {
+  const key = cacheKey ?? `${Math.floor(x)}_${Math.floor(y)}`;
+  const cached = safeOffsetCache.get(key);
+  if (cached) return cached;
+
+  const ix = Math.round(x), iy = Math.round(y);
+  const found = bfsFirstBuildable(ix, iy, maxRadius);
+  const off: SafeOffset = found
+    ? { dx: found[0] - ix, dy: found[1] - iy, distTiles: Math.hypot(found[0] - x, found[1] - y) }
+    : { dx: 0, dy: 0, distTiles: 0 }; // sin solar cercano: mantener original (spawn gestionará colisión)
+  safeOffsetCache.set(key, off);
+  return off;
+}
+
+/** Primer tile construible encontrando en BFS desde (sx,sy), o null. */
+export function findNearestBuildableTile(sx: number, sy: number, maxRadius = 12): Point | null {
+  const p = bfsFirstBuildable(Math.round(sx), Math.round(sy), maxRadius);
+  return p ? { x: p[0], y: p[1] } : null;
+}
+
+function bfsFirstBuildable(sx: number, sy: number, maxRadius: number): [number, number] | null {
+  if (isBuildableGeo(sampleGeo(sx, sy))) return [sx, sy];
+  const visited = new Set<number>();
+  // cola por anillos (anillo r = todos los Chebyshev-distancia r)
+  for (let ring = 1; ring <= maxRadius; ring++) {
+    for (let dy = -ring; dy <= ring; dy++) {
+      for (let dx = -ring; dx <= ring; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue; // solo el borde del anillo
+        const nx = sx + dx, ny = sy + dy;
+        const code = (nx + 4096) * 8192 + (ny + 4096);
+        if (visited.has(code)) continue;
+        visited.add(code);
+        if (isBuildableGeo(sampleGeo(nx, ny))) return [nx, ny];
+      }
+    }
+  }
+  return null;
+}
