@@ -183,6 +183,7 @@ const RAW_PROVINCES: RawProvince[] = [
 
 // ── Proyección perezosa + caché ─────────────────────────────────────────────
 import { geoToMap } from './geoChina';
+import { findSafeOffset, sampleGeo, isBuildableGeo } from '../generators/geoSampler';
 
 let projectedCache: ProvinceSeedData[] | null = null;
 
@@ -190,15 +191,27 @@ let projectedCache: ProvinceSeedData[] | null = null;
 export const INITIAL_PROVINCES: ProvinceSeedData[] = new Proxy({} as ProvinceSeedData[], {
   get(_t, prop) {
     if (!projectedCache) {
-      projectedCache = RAW_PROVINCES.map((p) => ({
-        id: p.id,
-        name: p.name,
-        region: p.region,
-        biome: p.biome,
-        coords: geoToMap(p.geo[0], p.geo[1]),
-        baseDifficulty: p.baseDifficulty,
-        description: p.description,
-      }));
+      projectedCache = RAW_PROVINCES.map((p) => {
+        const base = geoToMap(p.geo[0], p.geo[1]);
+        // "desplazamiento seguro": si la capital cae sobre río/lago/mar/cumbre
+        // (ciudades fluviales legítimas como Nanjing, Nanning o Yinchuan),
+        // movemos el solar al tile transitable más cercano (BFS determinista).
+        const g = sampleGeo(base.x, base.y);
+        let coords = base;
+        if (!isBuildableGeo(g)) {
+          const off = findSafeOffset(base.x, base.y, 12, `prov_${p.id}`);
+          coords = { x: base.x + off.dx, y: base.y + off.dy };
+        }
+        return {
+          id: p.id,
+          name: p.name,
+          region: p.region,
+          biome: p.biome,
+          coords,
+          baseDifficulty: p.baseDifficulty,
+          description: p.description,
+        };
+      });
     }
     return (projectedCache as any)[prop as any];
   },
