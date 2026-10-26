@@ -13,6 +13,11 @@ import {
 } from '../seeds/geoChina';
 import { stringToHash, mulberry32 } from '../../../utils/prng';
 import { mapLat } from '../seeds/geoChina';
+import { sampleGeoCached, __bindSampleGeo } from './geoTileCache';
+
+// Enlaza el muestreador crudo en la caché (rompe el ciclo de imports:
+// geoTileCache no importa funciones de este módulo, solo tipos).
+__bindSampleGeo(sampleGeo);
 
 // Precomputar los trazados en coords de mapa una sola vez (determinista).
 interface Polyline { pts: Point[]; cum: number[]; totalLen: number; }
@@ -292,14 +297,11 @@ export function findSafeOffset(x: number, y: number, maxRadius = 12, cacheKey?: 
   return off;
 }
 
-/** Primer tile construible encontrando en BFS desde (sx,sy), o null. */
-export function findNearestBuildableTile(sx: number, sy: number, maxRadius = 12): Point | null {
-  const p = bfsFirstBuildable(Math.round(sx), Math.round(sy), maxRadius);
-  return p ? { x: p[0], y: p[1] } : null;
-}
-
+/** Primer tile construible encontrando en BFS desde (sx,sy), o null.
+ *  Usa el CACHE (no sampleGeo crudo): la BFS puede visitar ~500 tiles y
+ *  cada uno solo se muestrea una vez de por vida. */
 function bfsFirstBuildable(sx: number, sy: number, maxRadius: number): [number, number] | null {
-  if (isBuildableGeo(sampleGeo(sx, sy))) return [sx, sy];
+  if (isBuildableGeo(sampleGeoCached(sx, sy))) return [sx, sy];
   const visited = new Set<number>();
   // cola por anillos (anillo r = todos los Chebyshev-distancia r)
   for (let ring = 1; ring <= maxRadius; ring++) {
@@ -310,7 +312,7 @@ function bfsFirstBuildable(sx: number, sy: number, maxRadius: number): [number, 
         const code = (nx + 4096) * 8192 + (ny + 4096);
         if (visited.has(code)) continue;
         visited.add(code);
-        if (isBuildableGeo(sampleGeo(nx, ny))) return [nx, ny];
+        if (isBuildableGeo(sampleGeoCached(nx, ny))) return [nx, ny];
       }
     }
   }

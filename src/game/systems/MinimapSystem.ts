@@ -16,7 +16,8 @@
 
 import Phaser from 'phaser';
 import { MinimapConfig, MINIMAP_DEFAULTS } from '../config/minimapConfig';
-import { naturalBiomeAt, sampleGeo, isImpassableGeo } from '../../core/data/world/generators/geoSampler';
+import { isImpassableGeo } from '../../core/data/world/generators/geoSampler';
+import { getBiomeCached, preloadGeoRowsAsync, sampleGeoCached } from '../../core/data/world/generators/geoTileCache';
 import { GeoPoi, getWorldPois } from '../../core/data/world/geoPois';
 import { WORLD_SEED } from '../../core/data/world/seeds/worldSeed';
 
@@ -54,6 +55,7 @@ export class MinimapSystem {
   private worldCanvas: HTMLCanvasElement | null = null;
   private worldCtx: CanvasRenderingContext2D | null = null;
   private terrainDirty = true;       // primera pasada completa
+  private terrainLoadStarted = false;
   private lastPlayerTile = { x: NaN, y: NaN };
   private dirtyRects: Array<{ x: number; y: number }> = []; // tiles pendientes
 
@@ -237,8 +239,14 @@ export class MinimapSystem {
   private refreshTerrainAround(p: { x: number; y: number }): void {
     if (!this.worldCtx || !this.worldCanvas) return;
 
+    // terrainDirty ahora solo es true hasta que preloadGeoRowsAsync termine;
+    // NO volver a lanzar la precarga si ya está en curso (anti-bucle de
+    // repintado perpetuo que congelaba el render del minimapa).
     if (this.terrainDirty) {
-      this.redrawFullTerrainCache();
+      if (!this.terrainLoadStarted) {
+        this.terrainLoadStarted = true;
+        this.redrawFullTerrainCache();
+      }
       return;
     }
 
@@ -292,47 +300,56 @@ export class MinimapSystem {
 
   private redrawFullTerrainCache(): void {
     if (!this.worldCtx) return;
-    this.terrainDirty = true;
+    this.terrainDirty = true; // sigue siendo "en progreso" hasta onDone
     this.worldCtx.fillStyle = '#0b1120';
     this.worldCtx.fillRect(0, 0, GRID.width, GRID.height);
 
-    const BAND = 125; // 8 franjas → ~8 frames de carga (no bloquea el hilo)
-    let y0 = 0;
-    const step = () => {
-      if (this.destroyed) return;
-      const y1 = Math.min(y0 + BAND, GRID.height);
-      this.paintRegion(0, GRID.width - 1, y0, y1 - 1);
-      y0 = y1;
-      if (y0 < GRID.height) {
-        this.scene.time.delayedCall(0, step);
-      } else {
+    // Precarga por franjas desde la caché de terreno (O(1) por tile ya
+    // resuelto; los misses se resuelven dentro del presupuesto de la propia
+    // precarga). El minimapa aparece casi de inmediato: primero se pinta la
+    // franja del jugador y luego el resto en background, sin bloquear frames.
+    const playerRow = Math.floor(this.opts.getPlayerTile().y);
+    const ROWS_PER_SLICE = 40;
+    preloadGeoRowsAsync(
+      ROWS_PER_SLICE,
+      (_y0, _y1) => {
+        if (this.destroyed) return;
+        this.paintRegion(0, GRID.width - 1, _y0, _y1);
+        // En cuanto la franja del jugador existe, muestra el recorte.
+        if (!this.cropTex && _y0 <= playerRow && playerRow <= _y1) {
+          this.blitCrop();
+        } else if (this.cropTex) {
+          this.cropTex.refresh();
+        }
+      },
+      () => {
+        if (this.destroyed) return;
         this.terrainDirty = false;
         const p = this.opts.getPlayerTile();
         this.lastPlayerTile = { x: Math.floor(p.x), y: Math.floor(p.y) };
         this.blitCrop();
-      }
-    };
-    step();
+      },
+    );
   }
 
   private viewW(): number {
     return Math.min(GRID.width, this.cfg.sizePx / this.scale);
   }
 
-  /** Pinta tiles en el lienzo-mundo usando la API real de geoSampler:
-   *  naturalBiomeAt (capa base) + sampleGeo (rasgo dominante para matices). */
+  /** Pinta tiles en el lienzo-mundo usando SOLO la caché O(1) de terreno.
+   *  (Antes llamaba a naturalBiomeAt/sampleGeo por tile → ~10 µs c/u, lo que
+   *  congelaba el hilo durante la carga del minimapa.) */
   private paintRegion(x0: number, x1: number, y0: number, y1: number): void {
     const ctx = this.worldCtx;
     if (!ctx) return;
     for (let ty = y0; ty <= y1; ty++) {
       for (let tx = x0; tx <= x1; tx++) {
-        const biome = naturalBiomeAt(tx, ty);
+        const biome = getBiomeCached(tx, ty);
         let c: string;
         if (biome === 'Agua') {
-          const g = sampleGeo(tx, ty);
-          c = g.kind === 'canal' ? '#38bdf8' : g.kind === 'mar' ? '#1e40af' : '#2563eb';
-        } else if (biome === 'Nieve') {
-          c = '#cbd5e1';
+          // Matiz de agua sin re-muestrear: el canal se distingue por franja
+          // longitudinal conocida; para matices exactos usa geo cacheado.
+          c = this.waterShadeCached(tx, ty);
         } else {
           c = this.biomeShade(biome);
         }
@@ -340,6 +357,16 @@ export class MinimapSystem {
         ctx.fillRect(tx, ty, 1, 1);
       }
     }
+  }
+
+  /** Mar / río / canal desde la caché (decode O(1), sin recorrer rasgos). */
+  private waterShadeCached(tx: number, ty: number): string {
+    // getBiomeCached solo da "Agua"; para el matiz pedimos el geo cacheado.
+    // sampleGeoCached sobre un tile ya resuelto es lectura O(1).
+    const g = sampleGeoCached(tx, ty).kind;
+    if (g === 'canal') return '#38bdf8';
+    if (g === 'mar') return '#1e40af';
+    return '#2563eb';
   }
 
   private biomeShade(b: string): string {
@@ -446,7 +473,7 @@ export class MinimapSystem {
       const tileY = Math.round(p.y + (ptr.y - this.container.y - this.cy) / this.scale);
       if (tileX < 0 || tileY < 0 || tileX >= GRID.width || tileY >= GRID.height) return;
       // No dejar enviar al jugador sobre agua/montaña (mismo chequeo lógico que ChunkManager)
-      if (isImpassableGeo(sampleGeo(tileX, tileY))) return;
+      if (isImpassableGeo(sampleGeoCached(tileX, tileY))) return;
       this.opts.onMapClick(tileX, tileY);
     });
 
