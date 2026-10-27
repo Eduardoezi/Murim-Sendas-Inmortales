@@ -23,16 +23,21 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return data as T;
 }
 
+import type { CultivatorAttributes, PlayerGender } from '../../types/player.types';
+
 export interface ServerPlayerRow {
   id: string;
   name: string;
-  gender: string;
+  /** El backend valida/normaliza el género; lo tipamos estrictamente aquí para
+   *  que el frontend no necesite casts (Regla de Oro #1: cero `any`). */
+  gender: PlayerGender;
   birth_date: string | null;
   origin: string | null;
   faction: string | null;
   alignment: string | null;
   realm_name: string;
-  stats_json: Record<string, number>;
+  /** Contrato autoritativo: el backend SIEMPRE devuelve los 10 atributos del GDD. */
+  stats_json: CultivatorAttributes;
   appearance_json: Record<string, unknown> | null;
   // Columnas de progresión (agregadas por migración)
   hp?: number | null;

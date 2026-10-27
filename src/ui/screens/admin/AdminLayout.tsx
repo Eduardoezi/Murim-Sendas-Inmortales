@@ -1,5 +1,6 @@
 import { Outlet } from 'react-router-dom';
 import { AdminSidebar } from '../../components/admin/AdminSidebar';
+import { ToastHost } from '../../components/admin/ToastHost';
 
 export const AdminLayout = () => {
   return (
@@ -12,6 +13,9 @@ export const AdminLayout = () => {
           <Outlet />
         </div>
       </main>
+
+      {/* Notificaciones globales del portal (baneos, CRUD, regeneraciones…) */}
+      <ToastHost />
     </div>
   );
 };

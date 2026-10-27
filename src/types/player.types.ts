@@ -28,6 +28,9 @@ export interface PlayerAppearance {
   accessoryType: number; // 0 = Ninguno, 1 = Corona, 2 = Horquilla
 }
 
+/** Género jugable según el creador de personaje (contrato con la BD). */
+export type PlayerGender = 'Hombre' | 'Mujer' | 'Otro';
+
 export type DantianScale = 
   | 'Gota' | 'Cáliz' | 'Estanque' | 'Lago' 
   | 'Mar' | 'Océano' | 'Firmamento' | 'Cosmos' | 'Primordial';
@@ -45,7 +48,7 @@ export type MortalRealm =
 export interface PlayerData {
   id: string;
   name: string;
-  gender: 'Hombre' | 'Mujer' | 'Otro';
+  gender: PlayerGender;
   birthdate?: string;
   lineage: string;
   appearance: PlayerAppearance;
