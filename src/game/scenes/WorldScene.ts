@@ -9,6 +9,7 @@ import { BeastEntity } from '../entities/BeastEntity';
 import { MinimapSystem } from '../systems/MinimapSystem';
 import { stepGeoBudget, getBiomeCached } from '../../core/data/world/generators/geoTileCache';
 import { nearestOutpost, distanceToOutpost, WorldOutpost, getOutposts, ARRIVAL_RADIUS } from '../../core/data/world/worldRegistry';
+import { adminService } from '../../core/services/adminService';
 import { EventBus } from '../events/EventBus';
 import { usePlayerStore } from '../../core/store/usePlayerStore';
 
@@ -309,8 +310,8 @@ export class WorldScene extends Phaser.Scene {
     this.scale.on('resize', () => this.minimap?.handleResize());
 
     // ── game:pause / game:resume desde React (AdminPage abre modales) ──
-    const onPause = () => { this.physics.pause(); this.events.pause(); };
-    const onResume = () => { this.physics.resume(); this.events.resume(); };
+    const onPause = () => { this.physics.pause(); this.scene.pause(); };
+    const onResume = () => { this.physics.resume(); this.scene.resume(); };
     EventBus.on('game:pause', onPause);
     EventBus.on('game:resume', onResume);
 
@@ -347,10 +348,27 @@ export class WorldScene extends Phaser.Scene {
     });
   }
 
+  /** Sube UNA vez el layout real del reino al servidor para que el panel de
+   *  administración cuente POIs reales (capitales/sectas/hitos/aldeas) en vez
+   *  de números inventados. Fire-and-forget: nunca bloquea el bucle principal. */
+  private syncPoisToAdminOnce(): void {
+    if ((globalThis as any).__murim_pois_synced__) return;
+    (globalThis as any).__murim_pois_synced__ = true;
+    const pois = getOutposts().map((o) => ({
+      id: o.id, name: o.name, kind: o.kind, x: o.pos.x, y: o.pos.y,
+    }));
+    void adminService.syncPois(pois).catch(() => {
+      (globalThis as any).__murim_pois_synced__ = false; // reintenta al volver al mundo
+    });
+  }
+
   update(time: number): void {
     // 0. Caché de terreno: resolver misses pendientes con presupuesto de 2.5 ms
     //    por frame (evita congelar el hilo principal).
     stepGeoBudget();
+
+    // 0a'. Sincronización única del registry de POIs con el backend (admin real)
+    this.syncPoisToAdminOnce();
 
   // 0b. Minimapa (O(1): blit solo al cruzar tile + iconos baratos)
   if (this.minimap) this.minimap.update();
@@ -406,6 +424,8 @@ export class WorldScene extends Phaser.Scene {
       distanceTiles: distanceToOutpost(playerTile, op.pos),
     });
     EventBus.emit('game:pause');
+    // Feed "últimos eventos" del panel de administración (dato real del juego)
+    void adminService.logEvent(`Llegada a ${op.name} (${op.provinceName})`);
   }
 
   /**

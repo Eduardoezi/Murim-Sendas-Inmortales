@@ -3,6 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import db from './db/database';
 import { register, login, verifyToken } from './auth';
+import { registerAdminRoutes } from './admin';
 
 const app = express();
 app.use(cors());
@@ -154,11 +155,11 @@ app.post('/api/player/progress', (req, res) => {
       qi = COALESCE(?, qi), max_qi = COALESCE(?, max_qi),
       spirit_stones = COALESCE(?, spirit_stones), sect_merits = COALESCE(?, sect_merits),
       cb_actual = COALESCE(?, cb_actual), cb_requerido = COALESCE(?, cb_requerido),
-      x = COALESCE(?, x), y = COALESCE(?, y)
+      x = COALESCE(?, x), y = COALESCE(?, y), last_seen = ?
     WHERE id = ?`)
     .run(hp ?? null, maxHp ?? null, qi ?? null, maxQi ?? null,
          spiritStones ?? null, sectMerits ?? null,
-         cbActual ?? null, cbRequerido ?? null, x ?? null, y ?? null, pid);
+         cbActual ?? null, cbRequerido ?? null, x ?? null, y ?? null, Date.now(), pid);
   const p: any = db.prepare('SELECT * FROM players WHERE id = ?').get(pid);
   res.json({ success: true, player: p });
 });
@@ -196,6 +197,9 @@ app.get('/api/player/inventory', (req, res) => {
   const items = db.prepare('SELECT id, item_key, name, category, quantity, description FROM inventory_items WHERE player_id = ? ORDER BY category, name').all(pid);
   res.json({ success: true, items, capacity: 15 });
 });
+
+// --- RUTAS DE ADMINISTRACIÓN (métricas globales, no datos del jugador) ---
+registerAdminRoutes(app);
 
 const PORT = 3001;
 app.listen(PORT, () => {
