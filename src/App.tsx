@@ -10,16 +10,22 @@ import { AuthPage } from './ui/screens/AuthPage';
 import { CreationPage } from './ui/screens/CreationPage';
 import { AdminPage } from './ui/screens/AdminPage';
 
+import { AdminLayout } from './ui/screens/admin/AdminLayout';
+import { Dashboard } from './ui/screens/admin/Dashboard';
+
+// Componente temporal para las rutas que iremos creando
+const UnderConstruction = ({ title }: { title: string }) => (
+  <div className="text-center py-20">
+    <h1 className="font-cinzel text-3xl text-amber-500 mb-4">{title}</h1>
+    <p className="text-stone-500">Este módulo de administración estará disponible pronto.</p>
+  </div>
+);
+
 export default function App() {
   const { token } = useAuthStore();
   const { playerId, setPlayer } = usePlayerStore();
-  const [isLoading, setIsLoading] = useState(true); // Estado de carga inicial
+  const [isLoading, setIsLoading] = useState(true);
 
-  // HIDRATACION REAL: al cargar/recargar, todo el estado del personaje se
-  // restaura desde SQLite via playerService (unica fuente de verdad).
-  // Si la BD aun no tiene cifras de progresion (personaje recien creado),
-  // se derivan UNA sola vez de los atributos y se persisten inmediatamente,
-  // para que de ahi en adelante la pantalla muestre siempre datos guardados.
   useEffect(() => {
     const hydrateFromServer = async () => {
       if (!token) {
@@ -40,6 +46,10 @@ export default function App() {
           const maxQi = hasSavedProgress ? (p.max_qi as number) : derivedMaxQi;
           const qi = hasSavedProgress ? (p.qi ?? maxQi) : Math.floor(maxQi / 2);
 
+        if (data.success && data.player) {
+          const p = data.player;
+          const calculatedHp = 50 + (p.stats_json.constitucion * 12);
+          
           setPlayer({
             playerId: p.id,
             name: p.name,
@@ -78,6 +88,14 @@ export default function App() {
     hydrateFromServer();
   }, [token, setPlayer]);
 
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-[#05070c] flex items-center justify-center text-amber-500 font-cinzel">
+        Cargando el Jianghu...
+      </div>
+    );
+  }
+
   return (
     <BrowserRouter>
       <Routes>
@@ -91,6 +109,18 @@ export default function App() {
         <Route path="/hub" element={
           token ? (playerId ? <AdminPage /> : <Navigate to="/create" />) : <Navigate to="/auth" />
         } />
+
+        {/* --- PORTAL DE ADMINISTRACIÓN --- */}
+        <Route path="/admin" element={<AdminLayout />}>
+          <Route index element={<Dashboard />} />
+          <Route path="players" element={<UnderConstruction title="Gestión de Jugadores" />} />
+          <Route path="world" element={<UnderConstruction title="Mundo y POIs" />} />
+          <Route path="bestiary" element={<UnderConstruction title="Fauna y Flora" />} />
+          <Route path="factions" element={<UnderConstruction title="Facciones" />} />
+          <Route path="debug" element={<UnderConstruction title="Depuración" />} />
+          <Route path="logs" element={<UnderConstruction title="Logs del Servidor" />} />
+          <Route path="settings" element={<UnderConstruction title="Configuración" />} />
+        </Route>
       </Routes>
     </BrowserRouter>
   );

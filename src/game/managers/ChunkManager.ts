@@ -149,7 +149,7 @@ export class ChunkManager {
 
           const tree = this.treeGroup.create(pos.x, pos.y + CUBE_HEIGHT, treeKey) as Phaser.Physics.Arcade.Sprite;
           tree.setOrigin(0.5, 0.9);
-          tree.setScale(0.85 + rng() * 0.3);
+          tree.setScale((0.90 + rng() * 0.3) * 2);
           tree.setFlipX(rng() > 0.5);
           tree.setDepth(pos.y + 1);
 

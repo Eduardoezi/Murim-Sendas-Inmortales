@@ -3,7 +3,7 @@ import Phaser from 'phaser';
 import { WorldScene } from './scenes/WorldScene';
 
 
-export const WORLD_SCALE = 1.2; // Ajusta este valor para toda la entidad del juego
+export const WORLD_SCALE = 1.0; // Ajusta este valor para toda la entidad del juego
 export const getGameConfig = (parentElement: HTMLElement): Phaser.Types.Core.GameConfig => ({
   type: Phaser.AUTO,
   width: '100%',

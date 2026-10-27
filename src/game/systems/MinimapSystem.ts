@@ -77,16 +77,18 @@ export class MinimapSystem {
     this.opts = opts;
     this.cfg = { ...MINIMAP_DEFAULTS, ...(opts.config ?? {}), colors: { ...MINIMAP_DEFAULTS.colors, ...(opts.config?.colors ?? {}) } };
     this.pois = getWorldPois().filter(opts.poiFilter ?? (() => true));
+    
     this.buildUI();
     this.startRadar();
     this.bindInput();
     this.relayout();
+    
+    // FIX: Forzar un re-layout un segundo después por si el canvas no tenía tamaño al inicio
+    this.scene.time.delayedCall(100, () => this.relayout());
   }
 
   // ── API pública ────────────────────────────────────────────────────────────
 
-  /** Llamar desde WorldScene.update(). Es O(1) amortizado: el render de
-   *  iconos es trivial y el terreno solo se toca al cruzar un tile. */
   public update(): void {
     if (this.destroyed) return;
     const p = this.opts.getPlayerTile();
@@ -94,21 +96,17 @@ export class MinimapSystem {
     this.renderIcons(p);
   }
 
-  /** Cambia el radio de visión (zoom) en caliente. */
   public setViewRadius(tiles: number): void {
     const v = Phaser.Math.Clamp(Math.round(tiles), this.cfg.viewRadiusMinTiles, this.cfg.viewRadiusMaxTiles);
     if (v === this.cfg.viewRadiusTiles) return;
     this.cfg.viewRadiusTiles = v;
     this.relayout();
-    // El lienzo-mundo NO depende del zoom: solo cambia la ventana de recorte.
     this.blitCrop();
   }
 
   public getViewRadius(): number { return this.cfg.viewRadiusTiles; }
-
   public setVisible(v: boolean): void { this.container.setVisible(v); }
 
-  /** True if a screen-space pointer is over the minimap (used to filter world clicks). */
   public isPointerOver(px: number, py: number): boolean {
     return this.container.getBounds().contains(px, py);
   }
@@ -125,14 +123,11 @@ export class MinimapSystem {
   private buildUI(): void {
     const { sizePx, colors } = this.cfg;
 
-    // Lienzo del terreno: 1 px por tile del mundo (1000x1000 ≈ 4 MB, ok)
     this.worldCanvas = document.createElement('canvas');
     this.worldCanvas.width = GRID.width;
     this.worldCanvas.height = GRID.height;
     this.worldCtx = this.worldCanvas.getContext('2d');
 
-    // Textura placeholder 1x1: el Image se escala a sizePx y la CanvasTexture
-    // recortada se le asigna en el primer blit (setTexture conserva el scale).
     if (!this.scene.textures.exists('__minimap_px')) {
       const pg = this.scene.make.graphics({ x: 0, y: 0 }, false);
       pg.fillStyle(0xffffff, 1).fillRect(0, 0, 1, 1);
@@ -150,21 +145,18 @@ export class MinimapSystem {
       fontFamily: 'monospace', fontSize: '10px', color: '#e2e8f0', backgroundColor: '#0b1120cc', padding: { x: 4, y: 1 },
     }).setOrigin(0.5, 0).setVisible(false);
 
-    // Máscara: círculo (o cuadrado) — nada del terreno/iconos sale de la forma
-    this.maskGfx = this.scene.make.graphics({ x: 0, y: 0 }, false);
+    // FIX DE LA MÁSCARA: Usar this.scene.add.graphics() y setVisible(false) 
+    // para asegurar que Phaser actualice sus transformaciones.
+    this.maskGfx = this.scene.add.graphics().setVisible(false);
     this.redrawMask();
     this.terrainCanvas.setMask(this.maskGfx.createGeometryMask());
     this.icons.setMask(this.maskGfx.createGeometryMask());
 
     this.container = this.scene.add.container(0, 0, [this.terrainCanvas, this.icons, this.frameGfx, this.label]);
-    this.container.setScrollFactor(0).setDepth(10000);
+    this.container.setScrollFactor(0).setDepth(10001); // Por encima de la niebla
     this.container.setSize(sizePx, sizePx);
     this.updateHitArea();
 
-    // Fondo oscuro bajo el canvas (por si hay huecos de recorte)
-    this.frameGfx.fillStyle(colors.background, 1).fillCircle(sizePx / 2, sizePx / 2, sizePx / 2);
-
-    // Hover: mostrar nombre del POI más cercano al cursor
     this.container.on('pointermove', (ptr: Phaser.Input.Pointer) => {
       const local = new Phaser.Geom.Point(ptr.x - this.container.x, ptr.y - this.container.y);
       const near = this.nearestPoiToLocal(local.x, local.y, 10);
@@ -178,6 +170,7 @@ export class MinimapSystem {
   private redrawMask(): void {
     const s = this.cfg.sizePx;
     this.maskGfx.clear();
+    this.maskGfx.fillStyle(0xffffff, 1);
     if (this.cfg.shape === 'circle') this.maskGfx.fillCircle(s / 2, s / 2, s / 2 - 1);
     else this.maskGfx.fillRect(0, 0, s - 2, s - 2);
   }
@@ -191,37 +184,50 @@ export class MinimapSystem {
     }
   }
 
-  /** Marco dorado + aguja norte, fuera de la máscara. */
   private drawFrame(): void {
     const { sizePx, colors, shape } = this.cfg;
     const g = this.frameGfx;
     g.clear();
-    g.lineStyle(2, colors.border, 0.9);
+    
+    // Fondo oscuro para que no sea transparente
+    g.fillStyle(colors.background, 0.9);
+    g.fillCircle(sizePx / 2, sizePx / 2, sizePx / 2);
+
+    g.lineStyle(2, colors.border, 1);
     if (shape === 'circle') g.strokeCircle(sizePx / 2, sizePx / 2, sizePx / 2 - 1);
     else g.strokeRect(1, 1, sizePx - 2, sizePx - 2);
-    // Norte
+    
     g.fillStyle(colors.border, 1);
     g.fillTriangle(sizePx / 2, 6, sizePx / 2 - 4, 14, sizePx / 2 + 4, 14);
   }
 
   private relayout(): void {
     const { sizePx, marginPx } = this.cfg;
-    const half = sizePx / 2;
-    this.cx = half; this.cy = half;
-    this.radiusPx = this.cfg.shape === 'circle' ? half - 2 : half - 1;
-    this.scale = this.radiusPx / this.cfg.viewRadiusTiles; // px por tile
+    const cam = this.scene.cameras.main;
+    
+    // Usar el tamaño de la cámara o el canvas (el que sea mayor que 0)
+    const w = cam.width > 0 ? cam.width : this.scene.scale.width;
+    const h = cam.height > 0 ? cam.height : this.scene.scale.height;
 
-    // Posición esquina inferior derecha (respeta RESIZE de la cámara)
-    this.container.setPosition(this.scene.scale.width - half - marginPx, this.scene.scale.height - half - marginPx);
-    // El recorte se centra en el jugador: al cambiar escala hay que re-blitear
+    const half = sizePx / 2; 
+    this.cx = half; 
+    this.cy = half;
+    this.radiusPx = this.cfg.shape === 'circle' ? half - 2 : half - 1;
+    this.scale = this.radiusPx / this.cfg.viewRadiusTiles;
+
+    // Posicionar en la esquina inferior derecha
+    this.container.setPosition(w - sizePx - marginPx, h - sizePx - marginPx);
+    
+    // Mover la máscara junto con el contenedor
+    this.maskGfx.setPosition(this.container.x, this.container.y);
+
     if (!this.terrainDirty && this.cropTex) this.blitCrop();
     this.drawFrame();
   }
 
-  /** Recalcula posición ante resize de la ventana del juego. */
   public handleResize(): void { this.relayout(); }
 
-  // ── Capa 1: Radar (intervalo, no por frame) ────────────────────────────────
+  // ── Capa 1: Radar ──────────────────────────────────────────────────────────
 
   private startRadar(): void {
     this.scanTimer = this.scene.time.addEvent({
@@ -232,16 +238,11 @@ export class MinimapSystem {
     this.enemies = this.opts.getEnemies();
   }
 
-  // ── Capa 2: Terreno (cache de mundo + recorte incremental) ─────────────────
+  // ── Capa 2: Terreno ────────────────────────────────────────────────────────
 
-  /** Por frame solo comprueba si el jugador cruzó a otra celda de tile.
-   *  En ese caso re-blitea el recorte (1 drawImage, <0.1 ms). Coste ~O(1). */
   private refreshTerrainAround(p: { x: number; y: number }): void {
     if (!this.worldCtx || !this.worldCanvas) return;
 
-    // terrainDirty ahora solo es true hasta que preloadGeoRowsAsync termine;
-    // NO volver a lanzar la precarga si ya está en curso (anti-bucle de
-    // repintado perpetuo que congelaba el render del minimapa).
     if (this.terrainDirty) {
       if (!this.terrainLoadStarted) {
         this.terrainLoadStarted = true;
@@ -255,8 +256,6 @@ export class MinimapSystem {
       this.lastPlayerTile = { x: px, y: py };
       this.blitCrop();
     } else {
-      // Movimiento sub-tile: re-blit suave solo si el desplazamiento supera
-      // medio píxel del lienzo (evita trabajar cada frame sin ganancia visual).
       const dx = p.x - this.blittedCenter.x, dy = p.y - this.blittedCenter.y;
       if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) this.blitCrop();
     }
@@ -266,8 +265,6 @@ export class MinimapSystem {
   private cropTex: Phaser.Textures.CanvasTexture | null = null;
   private blittedCenter = { x: NaN, y: NaN };
 
-  /** Recorta la ventana [player ± viewW/2] del lienzo-mundo al canvas del
-   *  widget (sizePx²) y refresca la CanvasTexture de Phaser. */
   private blitCrop(): void {
     if (!this.worldCanvas) return;
     const p = this.opts.getPlayerTile();
@@ -290,7 +287,6 @@ export class MinimapSystem {
       const key = '__minimap_view';
       if (this.scene.textures.exists(key)) this.scene.textures.remove(key);
       this.cropTex = this.scene.textures.addCanvas(key, this.cropCanvas) as Phaser.Textures.CanvasTexture;
-      // setTexture resetea el scale del Image: volver a fijar el tamaño de visualización
       this.terrainCanvas.setTexture(this.cropTex.key).setDisplaySize(this.cfg.sizePx, this.cfg.sizePx);
     } else {
       this.cropTex.refresh();
@@ -300,18 +296,11 @@ export class MinimapSystem {
 
   private redrawFullTerrainCache(): void {
     if (!this.worldCtx) return;
-    this.terrainDirty = true; // sigue siendo "en progreso" hasta onDone
+    this.terrainDirty = true;
     this.worldCtx.fillStyle = '#0b1120';
     this.worldCtx.fillRect(0, 0, GRID.width, GRID.height);
 
-    // Precarga por franjas desde la caché de terreno (O(1) por tile ya
-    // resuelto; los misses se resuelven dentro del presupuesto de la propia
-    // precarga). El minimapa aparece casi de inmediato: primero se pinta la
-    // franja del jugador y luego el resto en background, sin bloquear frames.
     const playerRow = Math.floor(this.opts.getPlayerTile().y);
-    // Ventana del jugador resuelta ANTES de iniciar (preloadGeoWindow es un
-    // barrido secuencial ~10x más rápido que consultas dispersas: ~5 ms para
-    // r=90). Así el recorte inicial nunca se pinta provisionalmente 'Estepa'.
     const pp = this.opts.getPlayerTile();
     preloadGeoWindow(pp.x, pp.y, 96);
     const ROWS_PER_SLICE = 40;
@@ -320,8 +309,6 @@ export class MinimapSystem {
       (_y0, _y1) => {
         if (this.destroyed) return;
         this.paintRegion(0, GRID.width - 1, _y0, _y1);
-        // Refresca el recorte en cuanto existe (el tile ya está cargado con
-        // la ventana del jugador pre-resuelta arriba).
         if (!this.cropTex && _y0 <= playerRow && playerRow <= _y1) {
           this.blitCrop();
         } else if (this.cropTex) {
@@ -342,9 +329,6 @@ export class MinimapSystem {
     return Math.min(GRID.width, this.cfg.sizePx / this.scale);
   }
 
-  /** Pinta tiles en el lienzo-mundo usando SOLO la caché O(1) de terreno.
-   *  (Antes llamaba a naturalBiomeAt/sampleGeo por tile → ~10 µs c/u, lo que
-   *  congelaba el hilo durante la carga del minimapa.) */
   private paintRegion(x0: number, x1: number, y0: number, y1: number): void {
     const ctx = this.worldCtx;
     if (!ctx) return;
@@ -353,8 +337,6 @@ export class MinimapSystem {
         const biome = getBiomeCached(tx, ty);
         let c: string;
         if (biome === 'Agua') {
-          // Matiz de agua sin re-muestrear: el canal se distingue por franja
-          // longitudinal conocida; para matices exactos usa geo cacheado.
           c = this.waterShadeCached(tx, ty);
         } else {
           c = this.biomeShade(biome);
@@ -365,10 +347,7 @@ export class MinimapSystem {
     }
   }
 
-  /** Mar / río / canal desde la caché (decode O(1), sin recorrer rasgos). */
   private waterShadeCached(tx: number, ty: number): string {
-    // getBiomeCached solo da "Agua"; para el matiz pedimos el geo cacheado.
-    // sampleGeoCached sobre un tile ya resuelto es lectura O(1).
     const g = sampleGeoCached(tx, ty).kind;
     if (g === 'canal') return '#38bdf8';
     if (g === 'mar') return '#1e40af';
@@ -383,11 +362,11 @@ export class MinimapSystem {
       case 'Pantano': return '#3f6212';
       case 'Nieve': return '#e2e8f0';
       case 'Costa': return '#0e7490';
-      default: return '#3f5f3a'; // Estepa
+      default: return '#3f5f3a';
     }
   }
 
-  // ── Capa 3: Iconos (render por frame, mínimo coste) ────────────────────────
+  // ── Capa 3: Iconos ─────────────────────────────────────────────────────────
 
   private renderIcons(player: { x: number; y: number }): void {
     const g = this.icons;
@@ -399,28 +378,22 @@ export class MinimapSystem {
       ly: this.cy + (wy - player.y) * this.scale,
     });
 
-    // Jugador: punto blanco con anillo rojo (siempre centrado)
     g.fillStyle(colors.player, 1).fillCircle(this.cx, this.cy, 3);
     g.lineStyle(1, colors.enemy, 0.8).strokeCircle(this.cx, this.cy, 5);
 
-    // Waypoint azul (destino actual)
     const wp = this.opts.getWaypoint?.();
     if (wp) this.drawPinnedBlip(g, toLocal(wp.x, wp.y), 3, colors.waypoint, true);
 
-    // POIs amarillos (objetivos), pegados al borde si salen de rango
     for (const poi of this.pois) {
       this.drawPinnedBlip(g, toLocal(poi.pos.x, poi.pos.y), poi.kind === 'capital' ? 3 : 2.4, colors.objective, poi.kind === 'capital');
     }
 
-    // Enemigos rojos (solo si están en rango; sin pinning: son radar táctico)
     for (const e of this.enemies) {
       const { lx, ly } = toLocal(e.x, e.y);
       if (this.insideShape(lx, ly)) g.fillStyle(colors.enemy, 1).fillCircle(lx, ly, 2);
     }
   }
 
-  /** Dibuja un blip; si queda fuera de la forma, lo "clava" en el borde
-   *  indicando la dirección (con tamaño reducido para distinguirlo). */
   private drawPinnedBlip(
     g: Phaser.GameObjects.Graphics,
     pt: { lx: number; ly: number },
@@ -434,7 +407,6 @@ export class MinimapSystem {
       if (ring) g.lineStyle(1, 0xffffff, 0.5).strokeCircle(lx, ly, size + 2);
       return;
     }
-    // Proyectar al borde desde el centro
     const dx = lx - this.cx, dy = ly - this.cy;
     let t: number;
     if (this.cfg.shape === 'circle') {
@@ -469,8 +441,6 @@ export class MinimapSystem {
     return best;
   }
 
-  // ── Input: click-para-mover + zoom con rueda sobre el widget ───────────────
-
   private bindInput(): void {
     this.container.on('pointerdown', (ptr: Phaser.Input.Pointer) => {
       if (!this.opts.onMapClick) return;
@@ -478,15 +448,13 @@ export class MinimapSystem {
       const tileX = Math.round(p.x + (ptr.x - this.container.x - this.cx) / this.scale);
       const tileY = Math.round(p.y + (ptr.y - this.container.y - this.cy) / this.scale);
       if (tileX < 0 || tileY < 0 || tileX >= GRID.width || tileY >= GRID.height) return;
-      // No dejar enviar al jugador sobre agua/montaña (mismo chequeo lógico que ChunkManager)
       if (isImpassableGeo(sampleGeoCached(tileX, tileY))) return;
       this.opts.onMapClick(tileX, tileY);
     });
 
-    // Rueda SOLO cuando el puntero está sobre el minimapa ⇒ ajusta su zoom
     this.wheelHandler = (ptr, _go, _dx, dy) => {
       if (!this.container.getBounds().contains(ptr.x, ptr.y)) return;
-      const dir = dy > 0 ? 1 : -1; // hacia abajo = alejar (más tiles)
+      const dir = dy > 0 ? 1 : -1;
       this.setViewRadius(this.cfg.viewRadiusTiles + dir * 8);
     };
     this.scene.input.on('wheel', this.wheelHandler);
