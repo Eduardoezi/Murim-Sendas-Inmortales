@@ -340,7 +340,7 @@ export class WorldScene extends Phaser.Scene {
       const zoomSpeed = 0.001;
       let newZoom = this.cameras.main.zoom - (deltaY * zoomSpeed);
       
-      newZoom = Phaser.Math.Clamp(newZoom, 0.8, 2.5);
+      newZoom = Phaser.Math.Clamp(newZoom, 0.8, 3.5);
       
       this.cameras.main.setZoom(newZoom);
       this.vignette.setScale(1 / newZoom); // La niebla cubre la pantalla
