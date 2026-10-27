@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { PlayerData, CultivatorAttributes, PlayerAppearance } from '../../types/player.types';
 import { playerService } from '../services/playerService';
+import { adminService } from '../services/adminService';
 import { EventBus } from '../../game/events/EventBus';
 
 // 1. Atributos por defecto (Basados en el GDD)
@@ -132,6 +133,8 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
       if (res.breakthrough) {
         EventBus.emit('game:resume'); // por si estaba pausado por un modal
         console.info(`Ascenso confirmado por el servidor: ${res.realm_name}`);
+        // Feed del panel de administración: ascensos reales confirmados por el servidor
+        void adminService.logEvent(`Ascenso: ${res.realm_name}`);
       }
       // Peligro al meditar en mundo abierto: se interrumpe con datos REALES
       // (posicion actual espejada por WorldScene). El spawn de bestias cerca
