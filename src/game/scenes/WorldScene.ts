@@ -10,6 +10,7 @@ import { MinimapSystem } from '../systems/MinimapSystem';
 import { stepGeoBudget, getBiomeCached } from '../../core/data/world/generators/geoTileCache';
 import { nearestOutpost, distanceToOutpost, WorldOutpost, getOutposts, ARRIVAL_RADIUS } from '../../core/data/world/worldRegistry';
 import { EventBus } from '../events/EventBus';
+import { mulberry32 } from '../../core/utils/prng';
 import { usePlayerStore } from '../../core/store/usePlayerStore';
 
 const TILE_WIDTH = 64;
@@ -309,8 +310,23 @@ export class WorldScene extends Phaser.Scene {
     this.scale.on('resize', () => this.minimap?.handleResize());
 
     // ── game:pause / game:resume desde React (AdminPage abre modales) ──
-    const onPause = () => { this.physics.pause(); this.events.pause(); };
-    const onResume = () => { this.physics.resume(); this.events.resume(); };
+    // Phaser 3 no expone events.pause()/resume() tipados; la forma correcta de
+    // congelar la escena es pausar la física + suprimir su update loop.
+    const originalUpdate = this.update.bind(this);
+    let scenePaused = false;
+    const onPause = () => {
+      if (scenePaused) return;
+      scenePaused = true;
+      this.physics.pause();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (this as any).update = () => {};
+    };
+    const onResume = () => {
+      if (!scenePaused) return;
+      scenePaused = false;
+      this.physics.resume();
+      this.update = originalUpdate;
+    };
     EventBus.on('game:pause', onPause);
     EventBus.on('game:resume', onResume);
 
@@ -319,7 +335,9 @@ export class WorldScene extends Phaser.Scene {
     const onDangerSignal = (pos: { x: number; y: number }) => {
       if (!this.player || !this.physics) return;
       const rel = { x: pos.x - this.worldOrigin.x, y: pos.y - this.worldOrigin.y };
-      const angle = Math.random() * Math.PI * 2;
+      // Regla de Oro #2: sin Math.random() — PRNG determinista sembrado por tiempo/posición.
+      const rng = mulberry32((Date.now() ^ (Math.floor(pos.x) * 73856093) ^ (Math.floor(pos.y) * 19349663)) >>> 0);
+      const angle = rng() * Math.PI * 2;
       const sx = rel.x + Math.cos(angle) * 6;
       const sy = rel.y + Math.sin(angle) * 6;
       const spr = this.faunaGroup.create(0, 0, 'tile_hierba') as Phaser.Physics.Arcade.Sprite;

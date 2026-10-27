@@ -2,12 +2,14 @@
 import { useState, useEffect } from 'react';
 import { usePlayerStore } from '../../core/store/usePlayerStore';
 import { useAuthStore } from '../../core/store/useAuthStore';
+import { playerService, type InventoryItemRow } from '../../core/services/playerService';
+import { getBiomeCached } from '../../core/data/world/generators/geoTileCache';
 import { useNavigate } from 'react-router-dom';
 import { MeditationPanel } from '../components/MeditationPanel';
 import { CharacterMenu } from '../components/CharacterMenu'; // <-- IMPORTAMOS EL MENÚ
 import { PhaserGame } from '../../game/PhaserGame';
-import { EventBus } from '../../game/events/EventBus';
-import { Map, Flame, LogOut, Heart, Zap, User, X } from 'lucide-react';
+import { EventBus, type PoiModalData } from '../../game/events/EventBus';
+import { Map, Flame, LogOut, Heart, Zap, User, X, Backpack } from 'lucide-react';
 
 export const AdminPage = () => {
   const { 
@@ -18,12 +20,13 @@ export const AdminPage = () => {
   const { logout } = useAuthStore();
   // Añadimos 'character' a las pestañas, pero la manejaremos como modal
   const [activeTab, setActiveTab] = useState<'world' | 'cultivation' | 'character'>('world');
-  const [modalOpen, setModalOpen] = useState<string | null>(null);
+  /** POI seleccionado desde Phaser (modal de asentamientos/sectas). */
+  const [poiModal, setPoiModal] = useState<PoiModalData | null>(null);
   const navigate = useNavigate();
 
   useEffect(() => {
-    const handleOpenModal = (data: { type: string }) => {
-      setModalOpen(data.type);
+    const handleOpenModal = (data: PoiModalData) => {
+      setPoiModal(data);
       EventBus.emit('game:pause');
     };
     EventBus.on('ui:open-modal', handleOpenModal);
@@ -91,8 +94,8 @@ export const AdminPage = () => {
 
       </main>
 
-      {/* MODAL DE PRUEBA (Ciudad) */}
-      {modalOpen && (
+      {/* MODAL DE POI (Ciudad / Secta / Hito) */}
+      {poiModal && (
         <div className="absolute inset-0 z-50 bg-black/80 flex items-center justify-center backdrop-blur-sm">
           <div className="bg-stone-900 border border-amber-500 p-8 rounded-xl max-w-md w-full text-center relative">
             <button onClick={() => { setPoiModal(null); EventBus.emit('game:resume'); }} className="absolute top-4 right-4 text-stone-400 hover:text-white"><X className="w-5 h-5"/></button>

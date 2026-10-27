@@ -315,7 +315,8 @@ adminRouter.post('/beasts', (req: Request, res: Response) => {
 });
 
 adminRouter.patch('/beasts/:id', (req: Request, res: Response) => {
-  const id = req.params.id;
+  // Express 5 tipa params como string | string[]; normalizamos a string.
+  const id = String(req.params.id);
   if (!id) { res.status(400).json({ success: false, message: 'Falta el id de la bestia' }); return; }
   const body = req.body as Record<string, unknown>;
   const sets: string[] = [];

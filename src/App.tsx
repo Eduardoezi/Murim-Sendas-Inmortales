@@ -11,14 +11,13 @@ import { AdminPage } from './ui/screens/AdminPage';
 
 import { AdminLayout } from './ui/screens/admin/AdminLayout';
 import { Dashboard } from './ui/screens/admin/Dashboard';
-
-// Componente temporal para las rutas que iremos creando
-const UnderConstruction = ({ title }: { title: string }) => (
-  <div className="text-center py-20">
-    <h1 className="font-cinzel text-3xl text-amber-500 mb-4">{title}</h1>
-    <p className="text-stone-500">Este módulo de administración estará disponible pronto.</p>
-  </div>
-);
+import { PlayersPage } from './ui/screens/admin/PlayersPage';
+import { WorldPage } from './ui/screens/admin/WorldPage';
+import { BestiaryPage } from './ui/screens/admin/BestiaryPage';
+import { FactionsPage } from './ui/screens/admin/FactionsPage';
+import { DebugConsole } from './ui/screens/admin/DebugConsole';
+import { LogsViewer } from './ui/screens/admin/LogsViewer';
+import { SettingsPage } from './ui/screens/admin/SettingsPage';
 
 export default function App() {
   const { token } = useAuthStore();
@@ -45,10 +44,6 @@ export default function App() {
           const maxQi = hasSavedProgress ? (p.max_qi as number) : derivedMaxQi;
           const qi = hasSavedProgress ? (p.qi ?? maxQi) : Math.floor(maxQi / 2);
 
-        if (data.success && data.player) {
-          const p = data.player;
-          const calculatedHp = 50 + (p.stats_json.constitucion * 12);
-          
           setPlayer({
             playerId: p.id,
             name: p.name,
@@ -109,16 +104,16 @@ export default function App() {
           token ? (playerId ? <AdminPage /> : <Navigate to="/create" />) : <Navigate to="/auth" />
         } />
 
-        {/* --- PORTAL DE ADMINISTRACIÓN --- */}
+        {/* --- PORTAL DE ADMINISTRACIÓN (rutas hijas bajo AdminLayout) --- */}
         <Route path="/admin" element={<AdminLayout />}>
           <Route index element={<Dashboard />} />
-          <Route path="players" element={<UnderConstruction title="Gestión de Jugadores" />} />
-          <Route path="world" element={<UnderConstruction title="Mundo y POIs" />} />
-          <Route path="bestiary" element={<UnderConstruction title="Fauna y Flora" />} />
-          <Route path="factions" element={<UnderConstruction title="Facciones" />} />
-          <Route path="debug" element={<UnderConstruction title="Depuración" />} />
-          <Route path="logs" element={<UnderConstruction title="Logs del Servidor" />} />
-          <Route path="settings" element={<UnderConstruction title="Configuración" />} />
+          <Route path="players" element={<PlayersPage />} />
+          <Route path="world" element={<WorldPage />} />
+          <Route path="bestiary" element={<BestiaryPage />} />
+          <Route path="factions" element={<FactionsPage />} />
+          <Route path="debug" element={<DebugConsole />} />
+          <Route path="logs" element={<LogsViewer />} />
+          <Route path="settings" element={<SettingsPage />} />
         </Route>
       </Routes>
     </BrowserRouter>
