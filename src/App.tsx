@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { useAuthStore } from './core/store/useAuthStore';
 import { usePlayerStore } from './core/store/usePlayerStore';
 import { playerService } from './core/services/playerService';
+import type { CultivatorAttributes } from './types/player.types';
 
 import { LandingPage } from './ui/screens/LandingPage';
 import { AuthPage } from './ui/screens/AuthPage';
@@ -47,11 +48,11 @@ export default function App() {
           setPlayer({
             playerId: p.id,
             name: p.name,
-            gender: p.gender,
+            gender: p.gender as 'Hombre' | 'Mujer' | 'Otro',
             birthdate: p.birth_date ?? '',
             lineage: p.origin ?? 'Comun',
             faction: p.faction ?? 'Errante',
-            attributes: p.stats_json,
+            attributes: p.stats_json as unknown as CultivatorAttributes,
             appearance: (p.appearance_json as never) ?? undefined,
             hp, maxHp, qi, maxQi,
             spiritStones: p.spirit_stones ?? 250,

@@ -7,6 +7,7 @@ import { register, login, verifyToken } from './auth';
 import { adminRouter } from './admin/router';
 import { pushLog } from './admin/logbus';
 import { ensurePoisSeeded, getBeastCatalog } from './admin/world';
+import { registerAdminRoutes } from './admin';
 
 const app = express();
 app.use(cors());
@@ -162,7 +163,7 @@ app.post('/api/player/progress', (req, res) => {
       qi = COALESCE(?, qi), max_qi = COALESCE(?, max_qi),
       spirit_stones = COALESCE(?, spirit_stones), sect_merits = COALESCE(?, sect_merits),
       cb_actual = COALESCE(?, cb_actual), cb_requerido = COALESCE(?, cb_requerido),
-      x = COALESCE(?, x), y = COALESCE(?, y)
+      x = COALESCE(?, x), y = COALESCE(?, y), last_seen = ?
     WHERE id = ?`)
     .run(hp ?? null, maxHp ?? null, qi ?? null, maxQi ?? null,
          spiritStones ?? null, sectMerits ?? null,
@@ -170,6 +171,9 @@ app.post('/api/player/progress', (req, res) => {
   const p2: any = db.prepare('SELECT * FROM players WHERE id = ?').get(pid);
   logActivity(pid, 'progress', `Progreso guardado (HP ${p2.hp ?? '-'} → ${hp ?? '-'}, posición (${x ?? p2.x}, ${y ?? p2.y}))`);
   res.json({ success: true, player: p2 });
+         cbActual ?? null, cbRequerido ?? null, x ?? null, y ?? null, Date.now(), pid);
+  const p: any = db.prepare('SELECT * FROM players WHERE id = ?').get(pid);
+  res.json({ success: true, player: p });
 });
 
 // --- Bitácora de actividad (alimenta el gráfico de 24h del Dashboard admin) ---
@@ -361,6 +365,8 @@ console.error = (...args: unknown[]): void => {
   origError(...args);
   pushLog('error', 'http', args.map((a) => (a instanceof Error ? a.message : String(a))).join(' '));
 };
+// --- RUTAS DE ADMINISTRACIÓN (métricas globales, no datos del jugador) ---
+registerAdminRoutes(app);
 
 const PORT = 3001;
 app.listen(PORT, () => {
