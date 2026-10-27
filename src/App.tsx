@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { useAuthStore } from './core/store/useAuthStore';
 import { usePlayerStore } from './core/store/usePlayerStore';
+import { playerService } from './core/services/playerService';
 
 import { LandingPage } from './ui/screens/LandingPage';
 import { AuthPage } from './ui/screens/AuthPage';
@@ -25,17 +26,24 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const fetchPlayerData = async () => {
+    const hydrateFromServer = async () => {
       if (!token) {
         setIsLoading(false);
         return;
       }
 
       try {
-        const res = await fetch('/api/player/me', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        const data = await res.json();
+        const { player: p } = await playerService.getMe();
+
+        if (p) {
+          const hasSavedProgress = typeof p.max_hp === 'number' && p.max_hp > 0;
+          const derivedMaxHp = 50 + (p.stats_json.constitucion * 12);
+          const derivedMaxQi = 50 + (p.stats_json.voluntad * 10);
+
+          const maxHp = hasSavedProgress ? (p.max_hp as number) : derivedMaxHp;
+          const hp = hasSavedProgress ? (p.hp ?? maxHp) : maxHp;
+          const maxQi = hasSavedProgress ? (p.max_qi as number) : derivedMaxQi;
+          const qi = hasSavedProgress ? (p.qi ?? maxQi) : Math.floor(maxQi / 2);
 
         if (data.success && data.player) {
           const p = data.player;
@@ -45,23 +53,38 @@ export default function App() {
             playerId: p.id,
             name: p.name,
             gender: p.gender,
-            birthdate: p.birth_date,
+            birthdate: p.birth_date ?? '',
+            lineage: p.origin ?? 'Comun',
+            faction: p.faction ?? 'Errante',
             attributes: p.stats_json,
-            hp: calculatedHp,
-            maxHp: calculatedHp,
-            qi: 50,
-            maxQi: 100,
-            realmName: p.realm_name
+            appearance: (p.appearance_json as never) ?? undefined,
+            hp, maxHp, qi, maxQi,
+            spiritStones: p.spirit_stones ?? 250,
+            sectMerits: p.sect_merits ?? 0,
+            cb_actual: p.cb_actual ?? 0,
+            cb_requerido: p.cb_requerido ?? 100,
+            realmName: p.realm_name,
           });
+
+          // Primera sesion tras la creacion: fijamos las cifras base en la BD
+          if (!hasSavedProgress) {
+            await playerService.saveProgress({
+              hp, maxHp, qi, maxQi,
+              spiritStones: p.spirit_stones ?? 250,
+              sectMerits: p.sect_merits ?? 0,
+              cbActual: p.cb_actual ?? 0,
+              cbRequerido: p.cb_requerido ?? 100,
+            }).catch(() => {});
+          }
         }
       } catch (error) {
-        console.error("Error al recuperar la sesión:", error);
+        console.error("Error al recuperar la sesion:", error);
       } finally {
         setIsLoading(false);
       }
     };
 
-    fetchPlayerData();
+    hydrateFromServer();
   }, [token, setPlayer]);
 
   if (isLoading) {
