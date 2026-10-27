@@ -5,7 +5,9 @@ import { useAuthStore } from '../../core/store/useAuthStore';
 import { useNavigate } from 'react-router-dom';
 import { MeditationPanel } from '../components/MeditationPanel';
 import { PhaserGame } from '../../game/PhaserGame'; // <--- IMPORTANTE
-import { EventBus } from '../../game/events/EventBus'; // <--- IMPORTANTE
+import { EventBus, PoiModalData } from '../../game/events/EventBus'; // <--- IMPORTANTE
+import { playerService, InventoryItemRow } from '../../core/services/playerService';
+import { getBiomeCached } from '../../core/data/world/generators/geoTileCache';
 import { Map, Flame, Backpack, LogOut, Heart, Zap, Shield, Sword, X } from 'lucide-react';
 
 export const AdminPage = () => {
@@ -16,15 +18,15 @@ export const AdminPage = () => {
   
   const { logout } = useAuthStore();
   const [activeTab, setActiveTab] = useState<'world' | 'cultivation' | 'inventory' | 'stats'>('world');
-  const [modalOpen, setModalOpen] = useState<string | null>(null); // Estado para el modal de Phaser
+  // Modal de POI: payload COMPLETO del mundo real (nombre/provincia/lore/distancia vivos)
+  const [poiModal, setPoiModal] = useState<PoiModalData | null>(null);
   const navigate = useNavigate();
 
   // ESCUCHAR EVENTOS DE PHASER
   useEffect(() => {
-    const handleOpenModal = (data: { type: string }) => {
-      setModalOpen(data.type);
-      // Pausar Phaser si es necesario
-      EventBus.emit('game:pause');
+    const handleOpenModal = (data: PoiModalData) => {
+      setPoiModal(data);
+      // Phaser ya se pausa desde WorldScene al emitir el evento
     };
 
     EventBus.on('ui:open-modal', handleOpenModal);
@@ -90,15 +92,7 @@ export const AdminPage = () => {
 
         {activeTab === 'cultivation' && <MeditationPanel />}
 
-        {activeTab === 'inventory' && (
-          <div className="w-full h-full p-8 flex items-center justify-center">
-            <div className="bg-stone-900/80 border border-stone-800 rounded-xl p-8 max-w-2xl w-full text-center">
-              <Backpack className="w-12 h-12 text-stone-600 mx-auto mb-4" />
-              <h2 className="font-cinzel text-2xl text-stone-300">Alforja Espiritual</h2>
-              <p className="text-sm text-stone-500 mt-2">Capacidad inicial: 15 ranuras</p>
-            </div>
-          </div>
-        )}
+        {activeTab === 'inventory' && <InventoryTab />}
 
         {activeTab === 'stats' && (
           <div className="w-full h-full p-8 flex items-center justify-center">
@@ -119,14 +113,23 @@ export const AdminPage = () => {
         )}
       </main>
 
-      {/* MODAL DE PRUEBA (Aparece cuando Phaser lo pide) */}
-      {modalOpen && (
+      {/* MODAL DEL MUNDO: datos reales del registry (geoChina + provincias) */}
+      {poiModal && (
         <div className="absolute inset-0 z-50 bg-black/80 flex items-center justify-center backdrop-blur-sm">
           <div className="bg-stone-900 border border-amber-500 p-8 rounded-xl max-w-md w-full text-center relative">
-            <button onClick={() => { setModalOpen(null); EventBus.emit('game:resume'); }} className="absolute top-4 right-4 text-stone-400 hover:text-white"><X className="w-5 h-5"/></button>
-            <h2 className="font-cinzel text-2xl text-amber-100 mb-4">¡Ciudad Descubierta!</h2>
-            <p className="text-stone-400 mb-6">Has llegado a los suburbios de Chang'an. Aquí podrás comerciar y descansar.</p>
-            <button onClick={() => { setModalOpen(null); EventBus.emit('game:resume'); }} className="px-6 py-2 bg-amber-600 text-stone-950 font-bold rounded">Volver al Mundo</button>
+            <button onClick={() => { setPoiModal(null); EventBus.emit('game:resume'); }} className="absolute top-4 right-4 text-stone-400 hover:text-white"><X className="w-5 h-5"/></button>
+            <div className="text-[10px] uppercase tracking-widest text-cyan-400 mb-1">
+              {poiModal.poi.kind === 'capital' ? 'Asentamiento' : poiModal.poi.kind === 'sect' ? 'Secta Marcial' : 'Hito del Jianghu'}
+            </div>
+            <h2 className="font-cinzel text-2xl text-amber-100 mb-2">{poiModal.poi.name}</h2>
+            <p className="text-xs text-stone-500 mb-4">
+              Provincia de {poiModal.poi.provinceName} · Bioma: {getBiomeCached(poiModal.poi.pos.x, poiModal.poi.pos.y)} ·
+              {' '}{poiModal.distanceTiles} tiles desde tu posición
+            </p>
+            {poiModal.poi.loreNote && (
+              <p className="text-sm text-stone-400 italic mb-6">{poiModal.poi.loreNote}</p>
+            )}
+            <button onClick={() => { setPoiModal(null); EventBus.emit('game:resume'); }} className="px-6 py-2 bg-amber-600 text-stone-950 font-bold rounded">Volver al Mundo</button>
           </div>
         </div>
       )}
@@ -149,3 +152,54 @@ export const AdminPage = () => {
     </div>
   );
 };
+// ── Alforja Espiritual: inventario REAL desde SQLite (/api/player/inventory) ──
+const CATEGORY_LABEL: Record<string, string> = {
+  consumible: 'Consumible', elixir: 'Elixir', llave: 'Llave', arma: 'Arma', misc: 'Varios',
+};
+
+function InventoryTab() {
+  const [items, setItems] = useState<InventoryItemRow[] | null>(null);
+  const [capacity, setCapacity] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    playerService.getInventory()
+      .then((res) => { if (alive) { setItems(res.items); setCapacity(res.capacity); } })
+      .catch((e) => { if (alive) setError(String(e)); });
+    return () => { alive = false; };
+  }, []);
+
+  if (error) return <div className="w-full h-full p-8 text-rose-400 text-sm">No se pudo leer el inventario: {error}</div>;
+  if (!items) return <div className="w-full h-full p-8 text-stone-500 text-sm">Abriendo la alforja…</div>;
+
+  return (
+    <div className="w-full h-full p-8 overflow-auto flex items-start justify-center">
+      <div className="bg-stone-900/80 border border-stone-800 rounded-xl p-8 max-w-3xl w-full">
+        <div className="flex items-center gap-3 mb-6">
+          <Backpack className="w-8 h-8 text-amber-500" />
+          <div>
+            <h2 className="font-cinzel text-2xl text-stone-200">Alforja Espiritual</h2>
+            <p className="text-xs text-stone-500">{items.length} / {capacity} ranuras (datos de la base del personaje)</p>
+          </div>
+        </div>
+        {items.length === 0 ? (
+          <p className="text-sm text-stone-500">Tu alforja está vacía. Comercia en los asentamientos del reino.</p>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {items.map((it) => (
+              <div key={it.id} className="bg-stone-950 border border-stone-800 rounded-lg p-4">
+                <div className="flex justify-between items-start">
+                  <span className="text-sm font-semibold text-amber-100">{it.name}</span>
+                  <span className="text-xs font-mono text-stone-400">x{it.quantity}</span>
+                </div>
+                <div className="text-[10px] uppercase tracking-wider text-cyan-500 mt-1">{CATEGORY_LABEL[it.category] ?? it.category}</div>
+                {it.description && <p className="text-xs text-stone-500 mt-2 italic">{it.description}</p>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

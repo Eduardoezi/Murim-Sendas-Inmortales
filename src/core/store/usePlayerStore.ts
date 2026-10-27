@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import { PlayerData, CultivatorAttributes, PlayerAppearance } from '../../types/player.types';
+import { playerService } from '../services/playerService';
+import { EventBus } from '../../game/events/EventBus';
 
 // 1. Atributos por defecto (Basados en el GDD)
 export const DEFAULT_ATTRIBUTES: CultivatorAttributes = {
@@ -45,7 +47,8 @@ export interface PlayerStoreState extends PlayerData {
   setPlayer: (data: Partial<PlayerStoreState>) => void;
   startMeditation: (location: 'private' | 'world') => void;
   stopMeditation: () => void;
-  tickCultivation: () => void;
+  tickCultivation: () => void | Promise<void>;
+  saveProgressToServer: (pos?: { x: number; y: number }) => Promise<void>;
   resetPlayer: () => void;
 }
 
@@ -111,24 +114,60 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
     set({ isMeditating: false, meditationLocation: null });
   },
 
-  tickCultivation: () => {
+  tickCultivation: async () => {
     const state = get();
-    if (!state.isMeditating) return;
+    if (!state.isMeditating || !state.playerId) return;
 
-    // Fórmula del GDD: QiGanado = EficienciaBase + (Percepción / 2)
+    // Fórmula del GDD: CB ganado = EficienciaBase + (Percepción / 2).
+    // El SERVIDOR aplica y persiste el progreso (fuente de verdad); la UI
+    // solo refleja lo que devuelve la BD, nunca números locales inventados.
     const ganancia = state.eficienciaBase + Math.floor(state.attributes.percepcion / 2);
-    
-    set((prev) => {
-      const nuevoCB = prev.cb_actual + ganancia;
-      
-      // Evento de peligro al meditar en el mundo abierto
-      if (prev.meditationLocation === 'world' && Math.random() < 0.10) {
-        console.warn("¡Has sido atacado durante tu meditación!");
-        // TODO: EventBus.emit('combat:start', { surprise: true })
+    try {
+      const res = await playerService.meditateTick(ganancia);
+      set({
+        cb_actual: res.cb_actual,
+        cb_requerido: res.cb_requerido,
+        realmName: res.realm_name,
+      });
+      if (res.breakthrough) {
+        EventBus.emit('game:resume'); // por si estaba pausado por un modal
+        console.info(`Ascenso confirmado por el servidor: ${res.realm_name}`);
       }
+      // Peligro al meditar en mundo abierto: se interrumpe con datos REALES
+      // (posicion actual espejada por WorldScene). El spawn de bestias cerca
+      // de esa coordenada lo decide ChunkManager al recibir la señal.
+      if (res.breakthrough || (state.meditationLocation === 'world' && Math.random() < 0.10)) {
+        try {
+          const raw = localStorage.getItem('murim_world_pos');
+          if (raw) {
+            const pos = JSON.parse(raw);
+            EventBus.emit('game:player-moved', { x: pos.x, y: pos.y });
+          }
+        } catch {}
+      }
+    } catch (err) {
+      console.error('Error en tick de cultivo:', err);
+    }
+  },
 
-      return { cb_actual: nuevoCB };
-    });
+  saveProgressToServer: async (pos) => {
+    const st = get();
+    // Espejo local de la posicion ABSOLUTA del mundo: WorldScene la lee al
+    // nacer (create es sincrono) para reaparecer donde murio la sesion anterior.
+    if (pos) {
+      try { localStorage.setItem('murim_world_pos', JSON.stringify(pos)); } catch {}
+    }
+    if (!st.playerId) return;
+    try {
+      await playerService.saveProgress({
+        hp: st.hp, maxHp: st.maxHp, qi: st.qi, maxQi: st.maxQi,
+        spiritStones: st.spiritStones, sectMerits: st.sectMerits,
+        cbActual: st.cb_actual, cbRequerido: st.cb_requerido,
+        x: pos?.x, y: pos?.y,
+      });
+    } catch (err) {
+      console.error('No se pudo guardar el progreso:', err);
+    }
   },
 
   resetPlayer: () => {
