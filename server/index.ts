@@ -7,7 +7,7 @@ import { register, login, verifyToken } from './auth';
 import { adminRouter } from './admin/router';
 import { pushLog } from './admin/logbus';
 import { ensurePoisSeeded, getBeastCatalog } from './admin/world';
-import { registerAdminRoutes } from './admin';
+import { registerAdminRoutes, registerPlayerEventRoutes } from './admin';
 
 const app = express();
 app.use(cors());
@@ -167,13 +167,10 @@ app.post('/api/player/progress', (req, res) => {
     WHERE id = ?`)
     .run(hp ?? null, maxHp ?? null, qi ?? null, maxQi ?? null,
          spiritStones ?? null, sectMerits ?? null,
-         cbActual ?? null, cbRequerido ?? null, x ?? null, y ?? null, pid);
+         cbActual ?? null, cbRequerido ?? null, x ?? null, y ?? null, Date.now(), pid);
   const p2: any = db.prepare('SELECT * FROM players WHERE id = ?').get(pid);
   logActivity(pid, 'progress', `Progreso guardado (HP ${p2.hp ?? '-'} → ${hp ?? '-'}, posición (${x ?? p2.x}, ${y ?? p2.y}))`);
   res.json({ success: true, player: p2 });
-         cbActual ?? null, cbRequerido ?? null, x ?? null, y ?? null, Date.now(), pid);
-  const p: any = db.prepare('SELECT * FROM players WHERE id = ?').get(pid);
-  res.json({ success: true, player: p });
 });
 
 // --- Bitácora de actividad (alimenta el gráfico de 24h del Dashboard admin) ---
@@ -355,6 +352,9 @@ seedCatalogTables();
 
 // POIs persistidos en la nueva base de datos de POIs
 ensurePoisSeeded();
+
+// --- Feed de eventos de JUGADOR (/api/events) — auth de usuario, ANTES del router admin ---
+registerPlayerEventRoutes(app);
 
 // --- Rutas del back office: TODO bajo /api/admin/* protegido por isAdmin ---
 app.use('/api/admin', adminRouter);

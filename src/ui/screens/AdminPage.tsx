@@ -3,31 +3,24 @@ import { useState, useEffect } from 'react';
 import { usePlayerStore } from '../../core/store/usePlayerStore';
 import { useAuthStore } from '../../core/store/useAuthStore';
 import { playerService, type InventoryItemRow } from '../../core/services/playerService';
+import { adminService, type AdminWorldData } from '../../core/services/adminService';
+import type { DashboardPayload } from '../../types/admin.types';
 import { getBiomeCached } from '../../core/data/world/generators/geoTileCache';
 import { useNavigate } from 'react-router-dom';
 import { MeditationPanel } from '../components/MeditationPanel';
-import { CharacterMenu } from '../components/CharacterMenu'; // <-- IMPORTAMOS EL MENÚ
+import { CharacterMenu } from '../components/CharacterMenu';
 import { PhaserGame } from '../../game/PhaserGame';
 import { EventBus, type PoiModalData } from '../../game/events/EventBus';
-import { Map, Flame, LogOut, Heart, Zap, User, X, Backpack } from 'lucide-react';
-import { PhaserGame } from '../../game/PhaserGame'; // <--- IMPORTANTE
-import { EventBus, PoiModalData } from '../../game/events/EventBus'; // <--- IMPORTANTE
-import { playerService, InventoryItemRow } from '../../core/services/playerService';
-import { adminService, AdminDashboardData, AdminWorldData } from '../../core/services/adminService';
-import { getBiomeCached } from '../../core/data/world/generators/geoTileCache';
-import { Map as MapIcon, Flame, Backpack, LogOut, Heart, Zap, Shield, Sword, X, Server, Globe2, Users, Activity } from 'lucide-react';
+import { Map as MapIcon, Flame, Backpack, LogOut, Heart, Zap, User, X, Shield, Server, Globe2, Users, Activity } from 'lucide-react';
 
 export const AdminPage = () => {
   const { 
-    name, realmName, hp, maxHp, qi, maxQi, spiritStones, resetPlayer, 
+    name, realmName, hp, maxHp, qi, maxQi, spiritStones, attributes, resetPlayer, 
     isMeditating, stopMeditation 
   } = usePlayerStore();
   
   const { logout } = useAuthStore();
-  // Añadimos 'character' a las pestañas, pero la manejaremos como modal
-  const [activeTab, setActiveTab] = useState<'world' | 'cultivation' | 'character'>('world');
-  /** POI seleccionado desde Phaser (modal de asentamientos/sectas). */
-  const [activeTab, setActiveTab] = useState<'world' | 'admin' | 'cultivation' | 'inventory' | 'stats'>('world');
+  const [activeTab, setActiveTab] = useState<'world' | 'admin' | 'cultivation' | 'inventory' | 'stats' | 'character'>('world');
   // Modal de POI: payload COMPLETO del mundo real (nombre/provincia/lore/distancia vivos)
   const [poiModal, setPoiModal] = useState<PoiModalData | null>(null);
   const navigate = useNavigate();
@@ -41,7 +34,7 @@ export const AdminPage = () => {
     return () => EventBus.off('ui:open-modal', handleOpenModal);
   }, []);
 
-  const handleTabChange = (tab: 'world' | 'admin' | 'cultivation' | 'inventory' | 'stats') => {
+  const handleTabChange = (tab: 'world' | 'admin' | 'cultivation' | 'inventory' | 'stats' | 'character') => {
     if (isMeditating && tab !== 'cultivation') stopMeditation();
     setActiveTab(tab);
   };
@@ -167,7 +160,7 @@ export const AdminPage = () => {
 const KIND_LABEL: Record<string, string> = { capital: 'Asentamiento', sect: 'Secta', landmark: 'Hito' };
 
 function ServerDashboardTab() {
-  const [metrics, setMetrics] = useState<AdminDashboardData | null>(null);
+  const [dash, setDash] = useState<DashboardPayload | null>(null);
   const [world, setWorld] = useState<AdminWorldData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -175,7 +168,7 @@ function ServerDashboardTab() {
     let alive = true;
     const load = () => {
       Promise.all([adminService.getDashboard(), adminService.getWorldState()])
-        .then(([d, w]) => { if (alive) { setMetrics(d.data); setWorld(w.data); } })
+        .then(([d, w]) => { if (alive) { setDash(d); setWorld(w); } })
         .catch((e) => { if (alive) setError(String(e)); });
     };
     load();
@@ -184,13 +177,14 @@ function ServerDashboardTab() {
   }, []);
 
   if (error) return <div className="w-full h-full p-8 text-rose-400 text-sm">Sin conexión con el servidor: {error}</div>;
-  if (!metrics || !world) return <div className="w-full h-full p-8 text-stone-500 text-sm">Consultando el reino…</div>;
+  if (!dash || !world) return <div className="w-full h-full p-8 text-stone-500 text-sm">Consultando el reino…</div>;
 
+  const m = dash.metrics;
   const cards = [
-    { label: 'Jugadores en Línea', value: metrics.onlinePlayers, icon: Users, color: 'text-cyan-400', bg: 'bg-cyan-950/30' },
-    { label: 'Personajes Totales', value: metrics.totalPlayers, icon: Activity, color: 'text-emerald-400', bg: 'bg-emerald-950/30' },
-    { label: 'Cuentas Registradas', value: metrics.totalAccounts, icon: Server, color: 'text-violet-400', bg: 'bg-violet-950/30' },
-    { label: 'Chunks Activos', value: `${metrics.activeChunks}/${metrics.totalChunks}`, icon: Globe2, color: 'text-amber-400', bg: 'bg-amber-950/30' },
+    { label: 'Jugadores en Línea', value: m.onlinePlayers, icon: Users, color: 'text-cyan-400', bg: 'bg-cyan-950/30' },
+    { label: 'Personajes Totales', value: m.totalPlayers, icon: Activity, color: 'text-emerald-400', bg: 'bg-emerald-950/30' },
+    { label: 'Cuentas Registradas', value: m.totalAccounts, icon: Server, color: 'text-violet-400', bg: 'bg-violet-950/30' },
+    { label: 'Chunks del Mundo', value: m.totalChunks, icon: Globe2, color: 'text-amber-400', bg: 'bg-amber-950/30' },
   ];
 
   return (
@@ -238,7 +232,7 @@ function ServerDashboardTab() {
         <div className="space-y-6">
           <div className="bg-stone-900/70 border border-stone-800 rounded-xl p-5">
             <h3 className="font-cinzel text-lg text-amber-100 mb-3">
-              Cartografía del Reino · {metrics.pois.capitals} asentamientos · {metrics.pois.sects} sectas · {metrics.pois.landmarks} hitos
+              Cartografía del Reino · {world.pois.length} POIs sincronizados · semilla {m.worldSeed}
             </h3>
             {world.pois.length === 0 ? (
               <p className="text-xs text-stone-500">El juego aún no ha sincronizado el registry (se sube al cargar el mundo).</p>
@@ -256,13 +250,13 @@ function ServerDashboardTab() {
 
           <div className="bg-stone-900/70 border border-stone-800 rounded-xl p-5">
             <h3 className="font-cinzel text-lg text-amber-100 mb-3">Últimos Eventos Reales</h3>
-            {metrics.recentEvents.length === 0 ? (
+            {dash.recentEvents.length === 0 ? (
               <p className="text-xs text-stone-500">Sin eventos registrados todavía (llegadas a POIs, meditaciones…).</p>
             ) : (
               <ul className="space-y-1">
-                {metrics.recentEvents.map((e, i) => (
-                  <li key={i} className="flex justify-between text-xs text-stone-400">
-                    <span>{e.event}</span><span className="font-mono text-stone-500">×{e.n}</span>
+                {dash.recentEvents.map((e) => (
+                  <li key={e.id} className="flex justify-between text-xs text-stone-400">
+                    <span>{e.text}</span><span className="font-mono text-stone-500">{e.time}</span>
                   </li>
                 ))}
               </ul>

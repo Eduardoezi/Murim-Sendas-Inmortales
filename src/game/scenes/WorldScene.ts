@@ -328,8 +328,6 @@ export class WorldScene extends Phaser.Scene {
       this.physics.resume();
       this.update = originalUpdate;
     };
-    const onPause = () => { this.physics.pause(); this.scene.pause(); };
-    const onResume = () => { this.physics.resume(); this.scene.resume(); };
     EventBus.on('game:pause', onPause);
     EventBus.on('game:resume', onResume);
 
