@@ -2,15 +2,20 @@
 import Phaser from 'phaser';
 import { INITIAL_PROVINCES } from '../../core/data/world/seeds/provinces';
 import { findPath } from '../utils/pathfinding';
-import { Province } from '../../core/data/world/types';
+import { evaluateUnstick } from '../utils/movement';
+import { ProvinceSeedData } from '../../core/data/world/types';
 import { ChunkManager, screenToMap } from '../managers/ChunkManager';
 import { PlayerEntity } from '../entities/PlayerEntity';
 import { MinimapSystem } from '../systems/MinimapSystem';
 import { stepGeoBudget } from '../../core/data/world/generators/geoTileCache';
-
-const TILE_WIDTH = 64;
-const TILE_HEIGHT = 32;
-const CUBE_HEIGHT = 16;
+import {
+  CUBE_HEIGHT,
+  MACRO_OVERLAY_ALPHA,
+  MACRO_OVERLAY_DEPTH,
+  TILE_HEIGHT,
+  TILE_WIDTH,
+  ensureTerrainTextures,
+} from '../rendering/tileTextures';
 
 const mapToScreen = (mapX: number, mapY: number) => ({
   x: (mapX - mapY) * (TILE_WIDTH / 2),
@@ -22,54 +27,14 @@ export class WorldScene extends Phaser.Scene {
   private chunkManager!: ChunkManager;
   private treeGroup!: Phaser.Physics.Arcade.StaticGroup;
   private faunaGroup!: Phaser.Physics.Arcade.Group;
-  private province!: Province;
+  private province!: ProvinceSeedData;
   private minimap!: MinimapSystem;
-  private worldOrigin = { x: 0, y: 0 };
 
   constructor() {
     super({ key: 'WorldScene' });
   }
 
-  private createTileTexture(key: string, topColor: number, sideColor: number) {
-    const g = this.make.graphics({ x: 0, y: 0 }, false);
-    g.fillStyle(topColor, 1);
-    g.beginPath(); g.moveTo(32, 0); g.lineTo(64, 16); g.lineTo(32, 32); g.lineTo(0, 16); g.closePath(); g.fillPath();
-    g.fillStyle(sideColor, 1);
-    g.beginPath(); g.moveTo(0, 16); g.lineTo(32, 32); g.lineTo(32, 32 + CUBE_HEIGHT); g.lineTo(0, 16 + CUBE_HEIGHT); g.closePath(); g.fillPath();
-    g.fillStyle(sideColor - 0x111111, 1);
-    g.beginPath(); g.moveTo(32, 32); g.lineTo(64, 16); g.lineTo(64, 16 + CUBE_HEIGHT); g.lineTo(32, 32 + CUBE_HEIGHT); g.closePath(); g.fillPath();
-    g.generateTexture(key, 64, 32 + CUBE_HEIGHT);
-    g.destroy();
-  }
-
-  private createMountainTexture() {
-    const g = this.make.graphics({ x: 0, y: 0 }, false);
-    g.fillStyle(0x6b7280, 1);
-    g.beginPath(); g.moveTo(32, 4); g.lineTo(60, 26); g.lineTo(32, 44); g.lineTo(4, 26); g.closePath(); g.fillPath();
-    g.fillStyle(0x4b5563, 1);
-    g.beginPath(); g.moveTo(4, 26); g.lineTo(32, 44); g.lineTo(32, 52); g.lineTo(4, 34); g.closePath(); g.fillPath();
-    g.fillStyle(0x374151, 1);
-    g.beginPath(); g.moveTo(60, 26); g.lineTo(32, 44); g.lineTo(32, 52); g.lineTo(60, 34); g.closePath(); g.fillPath();
-    g.fillStyle(0xf1f5f9, 1);
-    g.beginPath(); g.moveTo(32, 4); g.lineTo(42, 16); g.lineTo(32, 22); g.lineTo(22, 16); g.closePath(); g.fillPath();
-    g.generateTexture('tile_montana', 64, 52 + CUBE_HEIGHT);
-    g.destroy();
-  }
-
-  private createSwampTexture() {
-    const g = this.make.graphics({ x: 0, y: 0 }, false);
-    g.fillStyle(0x365314, 1);
-    g.beginPath(); g.moveTo(32, 0); g.lineTo(64, 16); g.lineTo(32, 32); g.lineTo(0, 16); g.closePath(); g.fillPath();
-    g.fillStyle(0x1a2e05, 1);
-    g.beginPath(); g.moveTo(0, 16); g.lineTo(32, 32); g.lineTo(32, 32 + CUBE_HEIGHT); g.lineTo(0, 16 + CUBE_HEIGHT); g.closePath(); g.fillPath();
-    g.lineStyle(2, 0x84cc16, 0.8);
-    for (let i = 0; i < 5; i++) {
-      const bx = 14 + i * 9;
-      g.beginPath(); g.moveTo(bx, 18); g.lineTo(bx + 3, 6); g.strokePath();
-    }
-    g.generateTexture('tile_pantano', 64, 32 + CUBE_HEIGHT);
-    g.destroy();
-  }
+  private macroOverlay?: Phaser.GameObjects.TileSprite;
 
   private createTrees() {
     const gRound = this.make.graphics({ x: 0, y: 0 }, false);
@@ -114,64 +79,78 @@ export class WorldScene extends Phaser.Scene {
   }
 
   preload() {
-    this.createTileTexture('tile_hierba', 0x4ade80, 0x22c55e);
-    this.createTileTexture('tile_agua', 0x3b82f6, 0x2563eb);
-    this.createTileTexture('tile_arena', 0xfcd34d, 0xd97706);
-    this.createTileTexture('tile_nieve', 0xf8fafc, 0xcbd5e1);
-    this.createMountainTexture();
-    this.createSwampTexture();
+    ensureTerrainTextures(this);
     this.createTrees();
   }
 
   create() {
     this.cameras.main.setBackgroundColor('#0f172a');
 
-    const shaanxi = INITIAL_PROVINCES.find(p => p.id === 'prov_shaanxi') as Province || INITIAL_PROVINCES[0];
+    const shaanxi = (INITIAL_PROVINCES.find(p => p.id === 'prov_shaanxi') ?? INITIAL_PROVINCES[0]) as ProvinceSeedData;
     this.province = shaanxi;
-    const changan = (shaanxi as any).coords ?? { x: 580, y: 334 };
+    const changan = shaanxi.coords ?? { x: 580, y: 578 };
 
-    let absSpawn = { x: changan.x + 8, y: changan.y + 8 };
-    this.worldOrigin = { x: absSpawn.x - 8, y: absSpawn.y - 8 };
+    const absSpawn = { x: changan.x + 8, y: changan.y + 8 };
 
     this.treeGroup = this.physics.add.staticGroup();
     this.faunaGroup = this.physics.add.group();
 
-    const startMapX = absSpawn.x - this.worldOrigin.x;
-    const startMapY = absSpawn.y - this.worldOrigin.y;
-    const worldX = this.worldOrigin.x + startMapX;
-    const worldY = this.worldOrigin.y + startMapY;
-    const startPos = mapToScreen(worldX, worldY);
+    // El sprite y los chunks trabajan en coordenadas absolutas del mapa:
+    // mapToScreen(tile absoluto) es la posición de pantalla del tile.
+    const startPos = mapToScreen(absSpawn.x, absSpawn.y);
     
     this.player = new PlayerEntity(this, startPos.x, startPos.y + CUBE_HEIGHT);
     this.chunkManager = new ChunkManager(this, this.province, this.treeGroup, this.faunaGroup);
+    this.chunkManager.update(this.player.sprite.x, this.player.sprite.y);
+    this.ensureWalkableSpawn();
 
     this.physics.add.collider(this.player.sprite, this.treeGroup);
     this.physics.add.collider(this.faunaGroup, this.treeGroup); 
 
     this.cameras.main.startFollow(this.player.sprite, true, 0.1, 0.1);
     this.chunkManager.update(this.player.sprite.x, this.player.sprite.y);
+    this.createMacroOverlay();
 
     const moveToTile = (tile: { x: number; y: number }) => {
       if (this.player.isMoving) return;
-      const localTarget = { x: tile.x - this.worldOrigin.x, y: tile.y - this.worldOrigin.y };
-      
+      const target = { x: Math.round(tile.x), y: Math.round(tile.y) };
       const startMapCoords = screenToMap(this.player.sprite.x, this.player.sprite.y - CUBE_HEIGHT);
       const path = findPath(
-        startMapCoords.x, startMapCoords.y, localTarget.x, localTarget.y,
-        (x, y) => this.chunkManager.obstacles.has(`${x},${y}`)
+        startMapCoords.x, startMapCoords.y, target.x, target.y,
+        (x, y) => this.chunkManager.isBlockedTile(x, y)
       );
 
       if (path.length > 0) {
         this.player.walkPath(this, path, mapToScreen, () => {
           this.chunkManager.update(this.player.sprite.x, this.player.sprite.y);
         });
-      } else {
-        // Fallback si está atascado
-        const directPath = [{ x: startMapCoords.x, y: startMapCoords.y }, localTarget];
-        this.player.walkPath(this, directPath, mapToScreen, () => {
-          this.chunkManager.update(this.player.sprite.x, this.player.sprite.y);
-        });
+        return;
       }
+
+      const unstick = evaluateUnstick(startMapCoords, target, {
+        isBlocked: (x, y) => this.chunkManager.isBlockedTile(x, y),
+        isMountain: (x, y) => this.chunkManager.isMountainTile(x, y),
+      });
+
+      if (!unstick.allowed) {
+        console.warn('[movement] fallback rechazado', {
+          reason: unstick.reason,
+          distanceTiles: unstick.distanceTiles,
+          from: startMapCoords,
+          to: target,
+        });
+        return;
+      }
+
+      console.info('[movement] unstick aplicado', {
+        distanceTiles: unstick.distanceTiles,
+        from: startMapCoords,
+        to: target,
+      });
+      const directPath = [{ x: startMapCoords.x, y: startMapCoords.y }, target];
+      this.player.walkPath(this, directPath, mapToScreen, () => {
+        this.chunkManager.update(this.player.sprite.x, this.player.sprite.y);
+      });
     };
 
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
@@ -179,30 +158,29 @@ export class WorldScene extends Phaser.Scene {
       if (this.player.isMoving) return;
       const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
       const local = screenToMap(worldPoint.x, worldPoint.y);
-      moveToTile({ x: local.x + this.worldOrigin.x, y: local.y + this.worldOrigin.y });
+      moveToTile({ x: local.x, y: local.y });
     });
 
     // 🔥 INICIALIZACIÓN DEL MINIMAPA SEGURA
     this.minimap = new MinimapSystem(this, {
-      getPlayerTile: () => {
-        const m = screenToMap(this.player.sprite.x, this.player.sprite.y - CUBE_HEIGHT);
-        return { x: m.x + this.worldOrigin.x, y: m.y + this.worldOrigin.y };
-      },
+      getPlayerTile: () => screenToMap(this.player.sprite.x, this.player.sprite.y - CUBE_HEIGHT),
       getEnemies: () => {
         const out: Array<{ x: number; y: number }> = [];
         this.faunaGroup.getChildren().forEach((child) => {
           const spr = child as Phaser.Physics.Arcade.Sprite;
           if (!spr.active) return;
           if (spr.getData('aquatic')) return;
-          const m = screenToMap(spr.x, spr.y - CUBE_HEIGHT);
-          out.push({ x: m.x + this.worldOrigin.x, y: m.y + this.worldOrigin.y });
+          out.push(screenToMap(spr.x, spr.y - CUBE_HEIGHT));
         });
         return out;
       },
       getWaypoint: () => null, // De momento no tenemos sistema de waypoints visual
       onMapClick: (tx, ty) => moveToTile({ x: tx, y: ty }),
     });
-    this.scale.on('resize', () => this.minimap?.handleResize());
+    this.scale.on('resize', () => {
+      this.minimap?.handleResize();
+      this.macroOverlay?.setSize(this.scale.width, this.scale.height);
+    });
 
     this.input.on('wheel', (pointer: Phaser.Input.Pointer, gameObjects: any, deltaX: number, deltaY: number, deltaZ: number) => {
       const zoomSpeed = 0.001;
@@ -212,9 +190,42 @@ export class WorldScene extends Phaser.Scene {
     });
   }
 
+  /** Evita nacer dentro de una cordillera: mueve al jugador al tile caminable más cercano. */
+  private ensureWalkableSpawn(): void {
+    const start = screenToMap(this.player.sprite.x, this.player.sprite.y - CUBE_HEIGHT);
+    const spawn = this.chunkManager.findNearestWalkableTile(start);
+    if (!spawn || (spawn.x === start.x && spawn.y === start.y)) return;
+
+    const pos = mapToScreen(spawn.x, spawn.y);
+    this.player.sprite.setPosition(pos.x, pos.y + CUBE_HEIGHT);
+    this.player.sprite.setDepth(this.player.sprite.y);
+    this.player.graphics.setDepth(this.player.sprite.y);
+    console.info('[movement] spawn reubicado a tile transitable', { from: start, to: spawn });
+  }
+
+  /**
+   * Capa macro de variación: ruido grande en multiply al 12 % sobre el suelo.
+   * Rompe la repetición de texturas sin tocar la iluminación de los tiles.
+   */
+  private createMacroOverlay(): void {
+    this.macroOverlay = this.add.tileSprite(
+      0, 0, this.scale.width, this.scale.height, 'macro_noise'
+    );
+    this.macroOverlay
+      .setOrigin(0, 0)
+      .setScrollFactor(0)
+      .setDepth(MACRO_OVERLAY_DEPTH)
+      .setBlendMode(Phaser.BlendModes.MULTIPLY)
+      .setAlpha(MACRO_OVERLAY_ALPHA);
+  }
+
   update(time: number): void {
     stepGeoBudget();
     if (this.minimap) this.minimap.update();
+    if (this.macroOverlay) {
+      this.macroOverlay.tilePositionX = this.cameras.main.scrollX;
+      this.macroOverlay.tilePositionY = this.cameras.main.scrollY;
+    }
     this.player.update(time);
     this.chunkManager.update(this.player.sprite.x, this.player.sprite.y);
   }

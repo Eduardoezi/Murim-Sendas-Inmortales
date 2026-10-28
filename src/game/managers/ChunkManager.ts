@@ -1,13 +1,22 @@
 import Phaser from 'phaser';
-import { generateChunkTerrain } from '../../core/data/world/generators/terrainGenerator';
+import { generateChunkTerrain, getTileTypeAt, TileType } from '../../core/data/world/generators/terrainGenerator';
 import { generateChunkFauna } from '../../core/data/world/generators/faunaGenerator';
 import { mulberry32, stringToHash } from '../../core/utils/prng';
 import { Province } from '../../core/data/world/types';
+import { sampleGeoCached } from '../../core/data/world/generators/geoTileCache';
 import { BeastEntity } from '../entities/BeastEntity';
+import { masksByNeighborType } from '../rendering/autotile';
+import {
+  CUBE_HEIGHT,
+  TILE_HEIGHT,
+  TILE_WIDTH,
+  ensureTransitionTexture,
+  isFlatTileType,
+  pickGroundTint,
+  pickMountainTexture,
+  pickMountainTint,
+} from '../rendering/tileTextures';
 
-const TILE_WIDTH = 64;
-const TILE_HEIGHT = 32;
-const CUBE_HEIGHT = 16;
 const CHUNK_SIZE = 16;
 const LOAD_RADIUS = 2;
 
@@ -40,6 +49,41 @@ export class ChunkManager {
     private treeGroup: Phaser.Physics.Arcade.StaticGroup,
     private faunaGroup: Phaser.Physics.Arcade.Group
   ) {}
+
+  /** Obstáculo físico cargado (árbol o montaña renderizada). */
+  public isBlockedTile(x: number, y: number): boolean {
+    return this.obstacles.has(`${Math.round(x)},${Math.round(y)}`);
+  }
+
+  /** Geometría montañosa real, aunque el chunk aún no esté cargado. */
+  public isMountainTile(x: number, y: number): boolean {
+    const kind = sampleGeoCached(Math.round(x), Math.round(y)).kind;
+    return kind === 'montania_alta' || kind === 'montania_media' || kind === 'estribacion';
+  }
+
+  /** Tile libre de obstáculos y de montaña: apto para spawn o destino. */
+  public isWalkableTile(x: number, y: number): boolean {
+    return !this.isBlockedTile(x, y) && !this.isMountainTile(x, y);
+  }
+
+  /** Tile caminable más cercano por anillos deterministas (spawn seguro). */
+  public findNearestWalkableTile(origin: { x: number; y: number }, maxRadius = 24): { x: number; y: number } | null {
+    const ox = Math.round(origin.x);
+    const oy = Math.round(origin.y);
+    if (this.isWalkableTile(ox, oy)) return { x: ox, y: oy };
+
+    for (let ring = 1; ring <= maxRadius; ring++) {
+      for (let dy = -ring; dy <= ring; dy++) {
+        for (let dx = -ring; dx <= ring; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue;
+          const x = ox + dx;
+          const y = oy + dy;
+          if (this.isWalkableTile(x, y)) return { x, y };
+        }
+      }
+    }
+    return null;
+  }
 
   public update(playerScreenX: number, playerScreenY: number): void {
     const mapCoords = screenToMap(playerScreenX, playerScreenY - CUBE_HEIGHT);
@@ -74,6 +118,13 @@ export class ChunkManager {
 
     // ---- 1. Terreno ----
     const tiles = generateChunkTerrain(this.province.id, this.province.biome, chunkX, chunkY, CHUNK_SIZE);
+    const tileTypeByKey = new Map<string, TileType>();
+    for (const tile of tiles) tileTypeByKey.set(`${tile.x},${tile.y}`, tile.type);
+
+    const neighborTypeAt = (x: number, y: number): TileType => {
+      const cached = tileTypeByKey.get(`${x},${y}`);
+      return cached ?? getTileTypeAt(x, y);
+    };
 
     // Set local para comprobaciones O(1) durante este chunk
     const localObstacles = new Set<string>();
@@ -83,7 +134,9 @@ export class ChunkManager {
 
       // Montañas: roca elevada e IMPENETRABLE (obstáculo físico + lógico)
       if (tile.type === 'montana') {
-        const rock = this.scene.add.image(pos.x, pos.y - 6, 'tile_montana');
+        const mountainRng = mulberry32(stringToHash(`mtn_${tile.x}_${tile.y}`));
+        const rock = this.scene.add.image(pos.x, pos.y - 6, pickMountainTexture(mountainRng));
+        rock.setTint(pickMountainTint(mountainRng));
         rock.setOrigin(0.5, 0.28);
         rock.setDepth(pos.y + 4);
         objects.push(rock);
@@ -93,12 +146,21 @@ export class ChunkManager {
         return;
       }
 
-      const img = this.scene.add.image(pos.x, pos.y + CUBE_HEIGHT, `tile_${tile.type}`);
-      img.setOrigin(0.5, 0);
-      img.setDepth(pos.y);
-      objects.push(img);
+      const neighbors = {
+        n: neighborTypeAt(tile.x, tile.y - 1),
+        e: neighborTypeAt(tile.x + 1, tile.y),
+        s: neighborTypeAt(tile.x, tile.y + 1),
+        w: neighborTypeAt(tile.x - 1, tile.y),
+      };
+      const transitionMasks = masksByNeighborType(tile.type, neighbors);
 
       if (tile.type === 'agua') {
+        // Agua profunda: conserva el cubo y su volumen.
+        const img = this.scene.add.image(pos.x, pos.y + CUBE_HEIGHT, 'tile_agua');
+        img.setOrigin(0.5, 0);
+        img.setDepth(pos.y);
+        objects.push(img);
+
         const tileKey = `${tile.x},${tile.y}`;
         this.waterTiles.add(tileKey);
         chunkWaterTiles.push(tileKey);
@@ -106,6 +168,18 @@ export class ChunkManager {
         if (tile.waterDepth === 1) img.setTint(0x1e3a8a);
         // ríos navegables vs canal somero: leve matiz distinto
         else if (tile.navigable && tile.geoId === 'grand_canal') img.setTint(0x38bdf8);
+
+        // Espuma en las orillas: todos los tipos de tierra comparten el mismo
+        // color de espuma, así que se agrupan en una sola máscara.
+        let landMask = 0;
+        for (const mask of transitionMasks.values()) landMask |= mask;
+        if (landMask !== 0) {
+          const key = ensureTransitionTexture(this.scene, tile.type, 'tierra', landMask);
+          const foam = this.scene.add.image(pos.x, pos.y + CUBE_HEIGHT, key);
+          foam.setOrigin(0.5, 0);
+          foam.setDepth(pos.y + 0.1);
+          objects.push(foam);
+        }
 
         const rng = mulberry32(stringToHash(`water_${tile.x}_${tile.y}`));
         const tween = this.scene.tweens.add({
@@ -120,6 +194,36 @@ export class ChunkManager {
         timers.push(tween);
         return;
       }
+
+      // Suelo plano: rombo de una sola cara, con variante + espejo determinista.
+      const detailRng = mulberry32(stringToHash(`ground_${chunkX}_${chunkY}_${tile.x}_${tile.y}`));
+      const variant = detailRng() > 0.5 ? '_b' : '';
+      const img = this.scene.add.image(pos.x, pos.y + CUBE_HEIGHT, `tile_${tile.type}${variant}`);
+      img.setOrigin(0.5, 0);
+      img.setDepth(pos.y);
+      if (isFlatTileType(tile.type)) {
+        // El tinte varía por parches de 4×4 tiles, no por tile: así no aparece
+        // un damero de rombos de colores ligeramente distintos.
+        const tintRng = mulberry32(stringToHash(
+          `tint_${Math.floor(tile.x / 4)}_${Math.floor(tile.y / 4)}_${tile.type}`,
+        ));
+        img.setTint(pickGroundTint(tile.type, tintRng));
+      }
+      if (tile.type === 'hierba' || tile.type === 'arena' || detailRng() > 0.65) {
+        img.setFlipX(detailRng() > 0.5);
+      }
+      objects.push(img);
+
+      // Bordes de transición (16 piezas por par, una máscara por tipo vecino).
+      for (const [target, mask] of transitionMasks) {
+        const key = ensureTransitionTexture(this.scene, tile.type, target, mask);
+        const edge = this.scene.add.image(pos.x, pos.y + CUBE_HEIGHT, key);
+        edge.setOrigin(0.5, 0);
+        edge.setDepth(pos.y + 0.1);
+        objects.push(edge);
+      }
+
+      this.maybePlaceDecal(tile.type, pos, detailRng, objects);
 
       if (tile.type === 'pantano') {
         // juncos dispersos sin colisión (caminables, estética húmeda)
@@ -137,7 +241,8 @@ export class ChunkManager {
       if (tile.type === 'hierba' || tile.type === 'arena' || tile.type === 'nieve') {
         const rng = mulberry32(stringToHash(`${chunkX}_${chunkY}_${tile.x}_${tile.y}`));
 
-        if (rng() < tile.density) {
+        // Menos árboles que antes: el suelo y los decals deben leerse.
+        if (rng() < tile.density * 0.7) {
           let treeKey = 'tree_round';
           if (tile.isNearWater || tile.type === 'arena') treeKey = rng() > 0.3 ? 'tree_palm' : 'tree_dead';
           else if (tile.type === 'nieve') treeKey = rng() > 0.4 ? 'tree_pine' : 'tree_dead';
@@ -237,6 +342,46 @@ export class ChunkManager {
 
     chunkObstacles.forEach((o) => this.obstacles.add(o));
     this.loadedChunks.set(key, { objects, obstacles: chunkObstacles, waterTiles: chunkWaterTiles, timers });
+  }
+
+  /** Detalles planos (piedras, matas, flores, grietas) sobre suelo caminable. */
+  private maybePlaceDecal(
+    tileType: TileType,
+    pos: { x: number; y: number },
+    rng: () => number,
+    objects: Phaser.GameObjects.GameObject[],
+  ): void {
+    if (!isFlatTileType(tileType)) return;
+
+    const chance = tileType === 'arena' ? 0.1 : tileType === 'nieve' ? 0.08 : 0.14;
+    if (rng() > chance) return;
+
+    const roll = rng();
+    let key: string;
+    if (tileType === 'arena') key = roll < 0.6 ? 'decal_stone' : 'decal_crack';
+    else if (tileType === 'nieve') key = roll < 0.7 ? 'decal_stone' : 'decal_crack';
+    else if (tileType === 'pantano') key = roll < 0.5 ? 'decal_grass' : roll < 0.8 ? 'decal_stone' : 'decal_crack';
+    else key = roll < 0.45 ? 'decal_grass' : roll < 0.7 ? 'decal_flower' : roll < 0.9 ? 'decal_stone' : 'decal_crack';
+
+    let dx = 0;
+    let dy = 0;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      dx = (rng() * 2 - 1) * 22;
+      dy = (rng() * 2 - 1) * 9;
+      if (Math.abs(dx) / 32 + Math.abs(dy) / 16 <= 0.72) break;
+    }
+
+    const decal = this.scene.add.image(
+      pos.x + dx,
+      pos.y + CUBE_HEIGHT + TILE_HEIGHT / 2 + dy,
+      key,
+    );
+    decal.setOrigin(0.5, 0.65);
+    decal.setScale(0.75 + rng() * 0.45);
+    decal.setAlpha(0.82 + rng() * 0.18);
+    decal.setFlipX(rng() > 0.5);
+    decal.setDepth(pos.y + 0.2);
+    objects.push(decal);
   }
 
   private unloadChunk(key: string, chunk: ChunkData): void {

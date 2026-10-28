@@ -93,10 +93,7 @@ function geoTileFor(mapX: number, mapY: number, provinceBiome: BiomeType, seedNu
 
   // Tierra libre: usar bioma natural derivado de latitud/ruido + modulador provincial
   const nat = getBiomeCached(mapX, mapY);
-  let type: TileType = 'hierba';
-  if (nat === 'Desierto') type = 'arena';
-  else if (nat === 'Nieve') type = 'nieve';
-  else if (nat === 'Pantano') type = 'pantano';
+  const type = typeForNaturalBiome(nat);
 
   const veg = biomeVegetation(provinceBiome);
   const natFactor = nat === 'Bosque' ? 1.0 : nat === 'Estepa' ? 0.4 : nat === 'Desierto' ? 0.1 : 0.7;
@@ -110,6 +107,41 @@ function geoTileFor(mapX: number, mapY: number, provinceBiome: BiomeType, seedNu
   }));
 
   return { ...base, type, density, isNearWater: near };
+}
+
+function typeForNaturalBiome(nat: string): TileType {
+  if (nat === 'Desierto') return 'arena';
+  if (nat === 'Nieve') return 'nieve';
+  if (nat === 'Pantano') return 'pantano';
+  return 'hierba';
+}
+
+/**
+ * Tipo de tile para cualquier coordenada (sin densidad ni props).
+ * Lo usa el autotiling para consultar los 4 vecinos de un tile.
+ */
+export function getTileTypeAt(mapX: number, mapY: number): TileType {
+  const g = sampleGeoCached(mapX, mapY);
+
+  switch (g.kind) {
+    case 'mar':
+    case 'rio':
+    case 'canal':
+    case 'lago':
+      return 'agua';
+    case 'ribera':
+    case 'desierto':
+      return 'arena';
+    case 'montania_alta':
+      return 'nieve';
+    case 'montania_media':
+    case 'estribacion':
+      return 'montana';
+    default:
+      break;
+  }
+
+  return typeForNaturalBiome(getBiomeCached(mapX, mapY));
 }
 
 export function generateChunkTerrain(
