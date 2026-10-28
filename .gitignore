@@ -41,6 +41,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# ── Artefactos de QA (capturas, snapshots) ──
+.qa/
+
 # ── Archivos temporales y descargas ──
 *.zip
 *.rar
