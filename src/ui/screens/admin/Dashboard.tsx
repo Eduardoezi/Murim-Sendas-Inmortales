@@ -18,7 +18,8 @@ import {
   Legend,
   CartesianGrid,
 } from 'recharts';
-import { adminService } from '../../../core/services/adminService';
+
+import { adminService, type AdminDashboardData } from '../../../core/services/adminService';
 import type { DashboardPayload } from '../../../types/admin.types';
 import { Spinner, ErrorState } from '../../components/admin/Spinner';
 
@@ -27,8 +28,13 @@ const REFRESH_MS = 30_000;
 const fmtNumber = (n: number): string => n.toLocaleString('es-ES');
 
 /** "2026-10-28T09:12:00Z" → "Hace 5 min" (relativo, sin dependencias externas). */
-const timeAgo = (iso: string): string => {
-  const diffMin = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60_000));
+const timeAgo = (iso?: string | Date | number | null): string => {
+  if (iso === null || iso === undefined || iso === '') return 'Ahora mismo';
+
+  const date = typeof iso === 'number' ? new Date(iso) : iso instanceof Date ? iso : new Date(iso);
+  if (Number.isNaN(date.getTime())) return 'Hace un momento';
+
+  const diffMin = Math.max(0, Math.round((Date.now() - date.getTime()) / 60_000));
   if (diffMin < 1) return 'Ahora mismo';
   if (diffMin < 60) return `Hace ${diffMin} min`;
   const h = Math.floor(diffMin / 60);
@@ -45,7 +51,7 @@ interface MetricCard {
 }
 
 export const Dashboard = () => {
-  const [payload, setPayload] = useState<DashboardPayload | null>(null);
+  const [payload, setPayload] = useState<AdminDashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -170,7 +176,10 @@ export const Dashboard = () => {
                 <Tooltip
                   contentStyle={{ backgroundColor: '#0c0a09', border: '1px solid #44403c', borderRadius: 8, fontSize: 12 }}
                   labelStyle={{ color: '#e7e5e4' }}
-                  formatter={(value: number | string, name: string) => [Number(value), name === 'actions' ? 'Acciones' : 'Creaciones']}
+                  formatter={(value, name) => {
+                    const numericValue = Array.isArray(value) ? Number(value[0] ?? 0) : Number(value ?? 0);
+                    return [numericValue, name === 'actions' ? 'Acciones' : 'Creaciones'];
+                  }}
                 />
                 <Legend wrapperStyle={{ fontSize: 11 }} formatter={(v: string) => (v === 'actions' ? 'Acciones' : 'Creaciones')} />
                 <Bar dataKey="actions" fill="#b45309" radius={[3, 3, 0, 0]} />

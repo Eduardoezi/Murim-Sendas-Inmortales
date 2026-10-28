@@ -1,34 +1,27 @@
 // src/ui/screens/AdminPage.tsx
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { usePlayerStore } from '../../core/store/usePlayerStore';
 import { useAuthStore } from '../../core/store/useAuthStore';
 import { playerService, type InventoryItemRow } from '../../core/services/playerService';
+import { adminService, type AdminDashboardData, type AdminWorldData } from '../../core/services/adminService';
 import { getBiomeCached } from '../../core/data/world/generators/geoTileCache';
-import { useNavigate } from 'react-router-dom';
 import { MeditationPanel } from '../components/MeditationPanel';
-import { CharacterMenu } from '../components/CharacterMenu'; // <-- IMPORTAMOS EL MENÚ
+import { CharacterMenu } from '../components/CharacterMenu';
 import { PhaserGame } from '../../game/PhaserGame';
 import { EventBus, type PoiModalData } from '../../game/events/EventBus';
-import { Map, Flame, LogOut, Heart, Zap, User, X, Backpack } from 'lucide-react';
-import { PhaserGame } from '../../game/PhaserGame'; // <--- IMPORTANTE
-import { EventBus, PoiModalData } from '../../game/events/EventBus'; // <--- IMPORTANTE
-import { playerService, InventoryItemRow } from '../../core/services/playerService';
-import { adminService, AdminDashboardData, AdminWorldData } from '../../core/services/adminService';
-import { getBiomeCached } from '../../core/data/world/generators/geoTileCache';
-import { Map as MapIcon, Flame, Backpack, LogOut, Heart, Zap, Shield, Sword, X, Server, Globe2, Users, Activity } from 'lucide-react';
+import { Map as MapIcon, Flame, LogOut, Heart, Zap, User, X, Backpack, Server, Globe2, Users, Activity, Shield, Sword } from 'lucide-react';
+
+type TabType = 'world' | 'admin' | 'cultivation' | 'character' | 'inventory' | 'stats';
 
 export const AdminPage = () => {
   const { 
     name, realmName, hp, maxHp, qi, maxQi, spiritStones, resetPlayer, 
-    isMeditating, stopMeditation 
+    isMeditating, stopMeditation, attributes 
   } = usePlayerStore();
   
   const { logout } = useAuthStore();
-  // Añadimos 'character' a las pestañas, pero la manejaremos como modal
-  const [activeTab, setActiveTab] = useState<'world' | 'cultivation' | 'character'>('world');
-  /** POI seleccionado desde Phaser (modal de asentamientos/sectas). */
-  const [activeTab, setActiveTab] = useState<'world' | 'admin' | 'cultivation' | 'inventory' | 'stats'>('world');
-  // Modal de POI: payload COMPLETO del mundo real (nombre/provincia/lore/distancia vivos)
+  const [activeTab, setActiveTab] = useState<TabType>('world');
   const [poiModal, setPoiModal] = useState<PoiModalData | null>(null);
   const navigate = useNavigate();
 
@@ -41,7 +34,7 @@ export const AdminPage = () => {
     return () => EventBus.off('ui:open-modal', handleOpenModal);
   }, []);
 
-  const handleTabChange = (tab: 'world' | 'admin' | 'cultivation' | 'inventory' | 'stats') => {
+  const handleTabChange = (tab: TabType) => {
     if (isMeditating && tab !== 'cultivation') stopMeditation();
     setActiveTab(tab);
   };
@@ -57,7 +50,6 @@ export const AdminPage = () => {
       
       {/* HUD SUPERIOR */}
       <header className="bg-stone-950 border-b border-stone-800 p-3 flex items-center justify-between z-20 relative">
-        {/* ... (HUD SUPERIOR SE MANTIENE IGUAL) ... */}
         <div className="flex items-center gap-4">
           <h1 className="font-cinzel text-xl font-bold text-amber-400">{name || 'Cultivador'}</h1>
           <span className="text-xs bg-cyan-950/50 border border-cyan-900/50 text-cyan-200 px-2 py-1 rounded">{realmName}</span>
@@ -84,18 +76,17 @@ export const AdminPage = () => {
       <main className="flex-1 relative overflow-hidden">
         
         {/* Phaser siempre en el fondo */}
-        <div className={`absolute inset-0 transition-opacity duration-300 ${activeTab === 'world' || activeTab === 'character' ? 'opacity-100 pointer-events-auto z-0' : 'opacity-0 pointer-events-none -z-10'}`}>
+        <div className={`absolute inset-0 transition-opacity duration-300 ${activeTab === 'world' || activeTab === 'character' || activeTab === 'admin' ? 'opacity-100 pointer-events-auto z-0' : 'opacity-0 pointer-events-none -z-10'}`}>
           <PhaserGame />
         </div>
 
         {activeTab === 'admin' && <ServerDashboardTab />}
-
         {activeTab === 'cultivation' && <MeditationPanel />}
-
         {activeTab === 'inventory' && <InventoryTab />}
+        {activeTab === 'character' && <CharacterMenu onClose={() => setActiveTab('world')} />}
 
         {activeTab === 'stats' && (
-          <div className="w-full h-full p-8 flex items-center justify-center">
+          <div className="w-full h-full p-8 flex items-center justify-center absolute inset-0 bg-[#05070c] z-10">
             <div className="bg-stone-900/80 border border-amber-900/30 rounded-xl p-8 max-w-4xl w-full">
               <h2 className="font-cinzel text-2xl text-amber-100 mb-6 flex items-center gap-2">
                 <Shield className="w-6 h-6 text-amber-400" /> Atributos del Alma y Cuerpo (GDD V3)
@@ -111,15 +102,9 @@ export const AdminPage = () => {
             </div>
           </div>
         )}
-
-        {/* OVERLAY: Menú de Personaje (SWTOR style) */}
-        {activeTab === 'character' && (
-          <CharacterMenu onClose={() => setActiveTab('world')} />
-        )}
-
       </main>
 
-      {/* MODAL DE POI (Ciudad / Secta / Hito) */}
+      {/* MODAL DE POI */}
       {poiModal && (
         <div className="absolute inset-0 z-50 bg-black/80 flex items-center justify-center backdrop-blur-sm">
           <div className="bg-stone-900 border border-amber-500 p-8 rounded-xl max-w-md w-full text-center relative">
@@ -151,19 +136,21 @@ export const AdminPage = () => {
         <button onClick={() => handleTabChange('cultivation')} className={`flex flex-col items-center p-2 rounded-lg transition-colors cursor-pointer ${activeTab === 'cultivation' ? 'text-amber-400 bg-amber-950/30' : 'text-stone-500 hover:text-stone-300'}`}>
           <Flame className="w-5 h-5 mb-1" /><span className="text-[10px] font-bold uppercase">Cultivo</span>
         </button>
-        
-        {/* BOTÓN DE PERSONAJE (Abre el Menú Modal) */}
+        <button onClick={() => handleTabChange('inventory')} className={`flex flex-col items-center p-2 rounded-lg transition-colors cursor-pointer ${activeTab === 'inventory' ? 'text-amber-400 bg-amber-950/30' : 'text-stone-500 hover:text-stone-300'}`}>
+          <Backpack className="w-5 h-5 mb-1" /><span className="text-[10px] font-bold uppercase">Alforja</span>
+        </button>
         <button onClick={() => handleTabChange('character')} className={`flex flex-col items-center p-2 rounded-lg transition-colors cursor-pointer ${activeTab === 'character' ? 'text-amber-400 bg-amber-950/30' : 'text-stone-500 hover:text-stone-300'}`}>
           <User className="w-5 h-5 mb-1" /><span className="text-[10px] font-bold uppercase">Personaje</span>
+        </button>
+        <button onClick={() => handleTabChange('stats')} className={`flex flex-col items-center p-2 rounded-lg transition-colors cursor-pointer ${activeTab === 'stats' ? 'text-amber-400 bg-amber-950/30' : 'text-stone-500 hover:text-stone-300'}`}>
+          <Sword className="w-5 h-5 mb-1" /><span className="text-[10px] font-bold uppercase">Stats</span>
         </button>
       </nav>
     </div>
   );
 };
-// ── Panel de Administración: métricas GLOBALES desde /api/admin/* ───────────
-// Separación estricta: NUNCA lee /api/player/me (eso hidrata el HUD del juego).
-// Aquí todo proviene de consultas agregadas de SQLite (todos los jugadores,
-// POIs sincronizados desde el World Layout Registry y eventos de sesión reales).
+
+// ── Panel de Administración ──
 const KIND_LABEL: Record<string, string> = { capital: 'Asentamiento', sect: 'Secta', landmark: 'Hito' };
 
 function ServerDashboardTab() {
@@ -175,15 +162,15 @@ function ServerDashboardTab() {
     let alive = true;
     const load = () => {
       Promise.all([adminService.getDashboard(), adminService.getWorldState()])
-        .then(([d, w]) => { if (alive) { setMetrics(d.data); setWorld(w.data); } })
+        .then(([d, w]) => { if (alive) { setMetrics(d); setWorld(w); } })
         .catch((e) => { if (alive) setError(String(e)); });
     };
     load();
-    const id = setInterval(load, 15_000); // refresco tipo "radar" sin saturar
+    const id = setInterval(load, 15_000);
     return () => { alive = false; clearInterval(id); };
   }, []);
 
-  if (error) return <div className="w-full h-full p-8 text-rose-400 text-sm">Sin conexión con el servidor: {error}</div>;
+  if (error) return <div className="w-full h-full p-8 text-rose-400 text-sm">Sin conexión: {error}</div>;
   if (!metrics || !world) return <div className="w-full h-full p-8 text-stone-500 text-sm">Consultando el reino…</div>;
 
   const cards = [
@@ -194,8 +181,7 @@ function ServerDashboardTab() {
   ];
 
   return (
-    <div className="w-full h-full p-8 overflow-auto space-y-6">
-      {/* Tarjetas de métricas (reales, no mock) */}
+    <div className="w-full h-full p-8 overflow-auto space-y-6 absolute inset-0 bg-[#05070c] z-10">
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 max-w-5xl mx-auto">
         {cards.map((c) => (
           <div key={c.label} className="bg-stone-900/70 border border-stone-800 rounded-xl p-5 flex items-center justify-between">
@@ -211,12 +197,9 @@ function ServerDashboardTab() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-5xl mx-auto">
-        {/* Habitantes del reino: TODOS los personajes de la BD */}
         <div className="bg-stone-900/70 border border-stone-800 rounded-xl p-5">
-          <h3 className="font-cinzel text-lg text-amber-100 mb-3">Habitantes del Reino ({world.players.length})</h3>
-          {world.players.length === 0 ? (
-            <p className="text-xs text-stone-500">Aún no hay personajes en la base.</p>
-          ) : (
+          <h3 className="font-cinzel text-lg text-amber-100 mb-3">Habitantes ({world.players.length})</h3>
+          {world.players.length === 0 ? <p className="text-xs text-stone-500">No hay personajes.</p> : (
             <ul className="space-y-2 max-h-64 overflow-auto">
               {world.players.map((p) => (
                 <li key={p.id} className="flex items-center justify-between text-xs bg-stone-950 border border-stone-800 rounded px-3 py-2">
@@ -225,44 +208,24 @@ function ServerDashboardTab() {
                     <span className="text-stone-200 font-semibold">{p.name}</span>
                     <span className="text-stone-500">{p.realm}</span>
                   </span>
-                  <span className="font-mono text-stone-500">
-                    {p.pos ? `(${p.pos.x}, ${p.pos.y})` : 'sin posición'}
-                  </span>
+                  <span className="font-mono text-stone-500">{p.pos ? `(${p.pos.x}, ${p.pos.y})` : 'sin posición'}</span>
                 </li>
               ))}
             </ul>
           )}
         </div>
 
-        {/* Puntos de interés sincronizados desde el juego + feed de eventos */}
         <div className="space-y-6">
           <div className="bg-stone-900/70 border border-stone-800 rounded-xl p-5">
             <h3 className="font-cinzel text-lg text-amber-100 mb-3">
-              Cartografía del Reino · {metrics.pois.capitals} asentamientos · {metrics.pois.sects} sectas · {metrics.pois.landmarks} hitos
+              Cartografía · {metrics.pois.capitals} asentamientos · {metrics.pois.sects} sectas · {metrics.pois.landmarks} hitos
             </h3>
-            {world.pois.length === 0 ? (
-              <p className="text-xs text-stone-500">El juego aún no ha sincronizado el registry (se sube al cargar el mundo).</p>
-            ) : (
+            {world.pois.length === 0 ? <p className="text-xs text-stone-500">Registry no sincronizado.</p> : (
               <ul className="grid grid-cols-2 gap-2 max-h-40 overflow-auto">
                 {world.pois.slice(0, 30).map((poi) => (
                   <li key={poi.id} className="text-[11px] bg-stone-950 border border-stone-800 rounded px-2 py-1.5 flex justify-between">
                     <span className="text-stone-300 truncate">{poi.name}</span>
                     <span className="text-cyan-500 ml-2 shrink-0">{KIND_LABEL[poi.kind] ?? poi.kind}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-
-          <div className="bg-stone-900/70 border border-stone-800 rounded-xl p-5">
-            <h3 className="font-cinzel text-lg text-amber-100 mb-3">Últimos Eventos Reales</h3>
-            {metrics.recentEvents.length === 0 ? (
-              <p className="text-xs text-stone-500">Sin eventos registrados todavía (llegadas a POIs, meditaciones…).</p>
-            ) : (
-              <ul className="space-y-1">
-                {metrics.recentEvents.map((e, i) => (
-                  <li key={i} className="flex justify-between text-xs text-stone-400">
-                    <span>{e.event}</span><span className="font-mono text-stone-500">×{e.n}</span>
                   </li>
                 ))}
               </ul>
@@ -274,7 +237,7 @@ function ServerDashboardTab() {
   );
 }
 
-// ── Alforja Espiritual: inventario REAL desde SQLite (/api/player/inventory) ──
+// ── Alforja Espiritual ──
 const CATEGORY_LABEL: Record<string, string> = {
   consumible: 'Consumible', elixir: 'Elixir', llave: 'Llave', arma: 'Arma', misc: 'Varios',
 };
@@ -292,22 +255,20 @@ function InventoryTab() {
     return () => { alive = false; };
   }, []);
 
-  if (error) return <div className="w-full h-full p-8 text-rose-400 text-sm">No se pudo leer el inventario: {error}</div>;
-  if (!items) return <div className="w-full h-full p-8 text-stone-500 text-sm">Abriendo la alforja…</div>;
+  if (error) return <div className="w-full h-full p-8 text-rose-400 text-sm absolute inset-0 bg-[#05070c] z-10">Error: {error}</div>;
+  if (!items) return <div className="w-full h-full p-8 text-stone-500 text-sm absolute inset-0 bg-[#05070c] z-10">Abriendo la alforja…</div>;
 
   return (
-    <div className="w-full h-full p-8 overflow-auto flex items-start justify-center">
+    <div className="w-full h-full p-8 overflow-auto flex items-start justify-center absolute inset-0 bg-[#05070c] z-10">
       <div className="bg-stone-900/80 border border-stone-800 rounded-xl p-8 max-w-3xl w-full">
         <div className="flex items-center gap-3 mb-6">
           <Backpack className="w-8 h-8 text-amber-500" />
           <div>
             <h2 className="font-cinzel text-2xl text-stone-200">Alforja Espiritual</h2>
-            <p className="text-xs text-stone-500">{items.length} / {capacity} ranuras (datos de la base del personaje)</p>
+            <p className="text-xs text-stone-500">{items.length} / {capacity} ranuras</p>
           </div>
         </div>
-        {items.length === 0 ? (
-          <p className="text-sm text-stone-500">Tu alforja está vacía. Comercia en los asentamientos del reino.</p>
-        ) : (
+        {items.length === 0 ? <p className="text-sm text-stone-500">Tu alforja está vacía.</p> : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {items.map((it) => (
               <div key={it.id} className="bg-stone-950 border border-stone-800 rounded-lg p-4">

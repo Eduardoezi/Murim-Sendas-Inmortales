@@ -1,19 +1,4 @@
 // src/game/systems/MinimapSystem.ts
-// ─────────────────────────────────────────────────────────────────────────────
-// Minimapa 2D modular para WorldScene (Phaser).
-//
-// Arquitectura (3 capas desacopladas):
-//   1) RadarTimer  — escaneo de fauna cada `scanIntervalMs` (NO cada frame).
-//   2) TerrainLayer— canvas de terreno re-cortado por tile cuando el jugador
-//                    cruza una celda; O(1) por frame en movimiento normal.
-//   3) IconsLayer  — Graphics barato por frame: jugador, enemigos, POIs y
-//                    waypoint, con máscara circular/cuadrada y "pinning" al
-//                    borde para objetivos fuera de rango.
-//
-// Click sobre el minimapa → callback onMapClick(tileX, tileY) para que la
-// escena haga su click-to-move habitual (findPath + walkPath).
-// ─────────────────────────────────────────────────────────────────────────────
-
 import Phaser from 'phaser';
 import { MinimapConfig, MINIMAP_DEFAULTS } from '../config/minimapConfig';
 import { isImpassableGeo } from '../../core/data/world/generators/geoSampler';
@@ -23,50 +8,46 @@ import { WORLD_SEED } from '../../core/data/world/seeds/worldSeed';
 
 export interface MinimapOptions {
   config?: Partial<MinimapConfig>;
-  /** Jugador en COORDENADAS DE MAPA (tile), no de pantalla. */
   getPlayerTile: () => { x: number; y: number };
-  /** Enemigos visibles (fauna cargada) en coords de mapa. Llamado por el radar. */
   getEnemies: () => Array<{ x: number; y: number }>;
-  /** Destino activo del click-to-move (coords de mapa) o null. */
   getWaypoint?: () => { x: number; y: number } | null;
-  /** Se invoca al hacer click dentro del minimapa (para mover al jugador). */
   onMapClick?: (tileX: number, tileY: number) => void;
   poiFilter?: (poi: GeoPoi) => boolean;
 }
 
 interface EnemyBlip { x: number; y: number }
 
-const GRID = WORLD_SEED.gridSize; // { width: 1000, height: 1000 }
+const GRID = WORLD_SEED.gridSize;
 
 export class MinimapSystem {
   private scene: Phaser.Scene;
   private cfg: MinimapConfig;
   private opts: MinimapOptions;
 
-  // Contenedor UI (fixed: vive en pantalla, no en el mundo)
   private container!: Phaser.GameObjects.Container;
   private terrainCanvas!: Phaser.GameObjects.Image;
   private icons!: Phaser.GameObjects.Graphics;
   private frameGfx!: Phaser.GameObjects.Graphics;
   private label!: Phaser.GameObjects.Text;
-  private maskGfx!: Phaser.GameObjects.Graphics; // máscara compartida, se repinta al hacer zoom
+  
+  private maskImage!: Phaser.GameObjects.Image;
+  
+  // Capa UI exclusiva del HUD
+  private uiLayer!: Phaser.GameObjects.Layer;
+  private uiOwnsLayer = false;
 
-  // Terreno cacheado en canvas 2D (mundo completo, 1 px por tile)
   private worldCanvas: HTMLCanvasElement | null = null;
   private worldCtx: CanvasRenderingContext2D | null = null;
-  private terrainDirty = true;       // primera pasada completa
+  private terrainDirty = true;
   private terrainLoadStarted = false;
   private lastPlayerTile = { x: NaN, y: NaN };
-  private dirtyRects: Array<{ x: number; y: number }> = []; // tiles pendientes
 
-  // Estado del radar
   private enemies: EnemyBlip[] = [];
   private pois: GeoPoi[] = [];
 
-  // Geometría derivada (recalculada si cambia zoom/tamaño)
-  private cx = 0; private cy = 0;      // centro del minimapa en pantalla
-  private radiusPx = 0;                 // radio/medio lado en px
-  private scale = 1;                    // px por tile
+  private cx = 0; private cy = 0;
+  private radiusPx = 0;
+  private scale = 1;
 
   private scanTimer?: Phaser.Time.TimerEvent;
   private wheelHandler?: (p: Phaser.Input.Pointer, go: any, dx: number, dy: number, dz: number) => void;
@@ -77,17 +58,13 @@ export class MinimapSystem {
     this.opts = opts;
     this.cfg = { ...MINIMAP_DEFAULTS, ...(opts.config ?? {}), colors: { ...MINIMAP_DEFAULTS.colors, ...(opts.config?.colors ?? {}) } };
     this.pois = getWorldPois().filter(opts.poiFilter ?? (() => true));
-    
     this.buildUI();
     this.startRadar();
     this.bindInput();
     this.relayout();
     
-    // FIX: Forzar un re-layout un segundo después por si el canvas no tenía tamaño al inicio
     this.scene.time.delayedCall(100, () => this.relayout());
   }
-
-  // ── API pública ────────────────────────────────────────────────────────────
 
   public update(): void {
     if (this.destroyed) return;
@@ -116,9 +93,8 @@ export class MinimapSystem {
     this.scanTimer?.remove();
     if (this.wheelHandler) this.scene.input.off('wheel', this.wheelHandler);
     this.container.destroy();
+    if (this.uiOwnsLayer) this.uiLayer?.destroy();
   }
-
-  // ── Construcción de la UI ──────────────────────────────────────────────────
 
   private buildUI(): void {
     const { sizePx, colors } = this.cfg;
@@ -145,16 +121,35 @@ export class MinimapSystem {
       fontFamily: 'monospace', fontSize: '10px', color: '#e2e8f0', backgroundColor: '#0b1120cc', padding: { x: 4, y: 1 },
     }).setOrigin(0.5, 0).setVisible(false);
 
-    // FIX DE LA MÁSCARA: Usar this.scene.add.graphics() y setVisible(false) 
-    // para asegurar que Phaser actualice sus transformaciones.
-    this.maskGfx = this.scene.add.graphics().setVisible(false);
-    this.redrawMask();
-    this.terrainCanvas.setMask(this.maskGfx.createGeometryMask());
-    this.icons.setMask(this.maskGfx.createGeometryMask());
+    // Usamos BitmapMask para evitar el bug de recorte de WebGL
+    if (!this.scene.textures.exists('__minimap_mask_tex')) {
+      const maskG = this.scene.make.graphics({ x: 0, y: 0 }, false);
+      maskG.fillStyle(0xffffff, 1);
+      maskG.fillCircle(sizePx / 2, sizePx / 2, sizePx / 2 - 1);
+      maskG.generateTexture('__minimap_mask_tex', sizePx, sizePx);
+      maskG.destroy();
+    }
+
+    this.maskImage = this.scene.make.image({ x: 0, y: 0, key: '__minimap_mask_tex', add: false });
+    const bitmapMask = new Phaser.Display.Masks.BitmapMask(this.scene, this.maskImage);
+    
+    this.terrainCanvas.setMask(bitmapMask);
+    this.icons.setMask(bitmapMask);
 
     this.container = this.scene.add.container(0, 0, [this.terrainCanvas, this.icons, this.frameGfx, this.label]);
-    this.container.setScrollFactor(0).setDepth(10001); // Por encima de la niebla
+    this.container.setScrollFactor(0).setDepth(10001); 
     this.container.setSize(sizePx, sizePx);
+
+    // ── FIX Z-ORDER (capas del mundo) ──────────────────────────────────────
+    const sceneWithLayer = this.scene as unknown as { uiLayer?: Phaser.GameObjects.Layer };
+    if (!this.uiLayer) {
+      this.uiLayer = sceneWithLayer.uiLayer ?? this.scene.add.layer();
+      if (!sceneWithLayer.uiLayer) this.uiLayer.setDepth(Number.MAX_SAFE_INTEGER);
+    }
+    this.uiLayer.add(this.container);
+    
+    this.uiOwnsLayer = !sceneWithLayer.uiLayer;
+
     this.updateHitArea();
 
     this.container.on('pointermove', (ptr: Phaser.Input.Pointer) => {
@@ -165,14 +160,6 @@ export class MinimapSystem {
       } else this.label.setVisible(false);
     });
     this.container.on('pointerout', () => this.label.setVisible(false));
-  }
-
-  private redrawMask(): void {
-    const s = this.cfg.sizePx;
-    this.maskGfx.clear();
-    this.maskGfx.fillStyle(0xffffff, 1);
-    if (this.cfg.shape === 'circle') this.maskGfx.fillCircle(s / 2, s / 2, s / 2 - 1);
-    else this.maskGfx.fillRect(0, 0, s - 2, s - 2);
   }
 
   private updateHitArea(): void {
@@ -189,8 +176,7 @@ export class MinimapSystem {
     const g = this.frameGfx;
     g.clear();
     
-    // Fondo oscuro para que no sea transparente
-    g.fillStyle(colors.background, 0.9);
+    g.fillStyle(colors.background, 0.85);
     g.fillCircle(sizePx / 2, sizePx / 2, sizePx / 2);
 
     g.lineStyle(2, colors.border, 1);
@@ -203,31 +189,23 @@ export class MinimapSystem {
 
   private relayout(): void {
     const { sizePx, marginPx } = this.cfg;
-    const cam = this.scene.cameras.main;
-    
-    // Usar el tamaño de la cámara o el canvas (el que sea mayor que 0)
-    const w = cam.width > 0 ? cam.width : this.scene.scale.width;
-    const h = cam.height > 0 ? cam.height : this.scene.scale.height;
-
     const half = sizePx / 2; 
     this.cx = half; 
     this.cy = half;
     this.radiusPx = this.cfg.shape === 'circle' ? half - 2 : half - 1;
     this.scale = this.radiusPx / this.cfg.viewRadiusTiles;
 
-    // Posicionar en la esquina inferior derecha
-    this.container.setPosition(w - sizePx - marginPx, h - sizePx - marginPx);
-    
-    // Mover la máscara junto con el contenedor
-    this.maskGfx.setPosition(this.container.x, this.container.y);
+    this.container.setPosition(
+      this.scene.scale.width - sizePx - marginPx, 
+      this.scene.scale.height - sizePx - marginPx
+    );
+    this.maskImage.setPosition(this.container.x, this.container.y);
 
     if (!this.terrainDirty && this.cropTex) this.blitCrop();
     this.drawFrame();
   }
 
   public handleResize(): void { this.relayout(); }
-
-  // ── Capa 1: Radar ──────────────────────────────────────────────────────────
 
   private startRadar(): void {
     this.scanTimer = this.scene.time.addEvent({
@@ -237,8 +215,6 @@ export class MinimapSystem {
     });
     this.enemies = this.opts.getEnemies();
   }
-
-  // ── Capa 2: Terreno ────────────────────────────────────────────────────────
 
   private refreshTerrainAround(p: { x: number; y: number }): void {
     if (!this.worldCtx || !this.worldCanvas) return;
@@ -303,7 +279,7 @@ export class MinimapSystem {
     const playerRow = Math.floor(this.opts.getPlayerTile().y);
     const pp = this.opts.getPlayerTile();
     preloadGeoWindow(pp.x, pp.y, 96);
-    const ROWS_PER_SLICE = 40;
+    const ROWS_PER_SLICE = 20;
     preloadGeoRowsAsync(
       ROWS_PER_SLICE,
       (_y0, _y1) => {
@@ -365,8 +341,6 @@ export class MinimapSystem {
       default: return '#3f5f3a';
     }
   }
-
-  // ── Capa 3: Iconos ─────────────────────────────────────────────────────────
 
   private renderIcons(player: { x: number; y: number }): void {
     const g = this.icons;

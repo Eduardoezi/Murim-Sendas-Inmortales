@@ -9,9 +9,7 @@ import { BeastEntity } from '../entities/BeastEntity';
 import { MinimapSystem } from '../systems/MinimapSystem';
 import { stepGeoBudget, getBiomeCached } from '../../core/data/world/generators/geoTileCache';
 import { nearestOutpost, distanceToOutpost, WorldOutpost, getOutposts, ARRIVAL_RADIUS } from '../../core/data/world/worldRegistry';
-import { adminService } from '../../core/services/adminService';
 import { EventBus } from '../events/EventBus';
-import { mulberry32 } from '../../core/utils/prng';
 import { usePlayerStore } from '../../core/store/usePlayerStore';
 
 const TILE_WIDTH = 64;
@@ -30,22 +28,27 @@ export class WorldScene extends Phaser.Scene {
   private faunaGroup!: Phaser.Physics.Arcade.Group;
   private province!: Province;
   private vignette!: Phaser.GameObjects.Image;
+  
+  // ── Capa UI (HUD del juego) ───────────────────────────────────────────────
+  // En isométrico, depth = pos.y + N y crece sin límite. Solución:
+  // una capa propia con Number.MAX_SAFE_INTEGER.
+  public uiLayer!: Phaser.GameObjects.Layer;
+
   // ── Minimapa ──────────────────────────────────────────────────────────────
   private minimap!: MinimapSystem;
-  private worldOrigin = { x: 0, y: 0 };       // origen del mapa (Chang'an)
+  private worldOrigin = { x: 0, y: 0 };
   private currentWaypoint: { x: number; y: number } | null = null;
-  // ── Puestos de interés (worldRegistry) en coords ABSOLUTAS del mapa ──────
+  
   private outpostsLayer!: Phaser.GameObjects.Container;
   private renderedOutposts = new Map<string, Phaser.GameObjects.GameObject[]>();
-  private lastPlayerTile = { x: 0, y: 0 };    // tile absoluto actual (para arrival)
-  private lastPosSave = 0;                     // throttle de guardado de posicion
-  private arrivedCooldowns = new Set<string>(); // no re-abrir el modal cada frame
+  private lastPlayerTile = { x: 0, y: 0 };
+  private lastPosSave = 0;
+  private arrivedCooldowns = new Set<string>();
 
   constructor() {
     super({ key: 'WorldScene' });
   }
 
-  // --- 1. GENERACIÓN DE TEXTURAS TEMPORALES (Se quedarán aquí hasta tener arte real) ---
   private createTileTexture(key: string, topColor: number, sideColor: number) {
     const g = this.make.graphics({ x: 0, y: 0 }, false);
     g.fillStyle(topColor, 1);
@@ -58,24 +61,20 @@ export class WorldScene extends Phaser.Scene {
     g.destroy();
   }
 
-  /** Roca de montaña: rombo escalonado (más alto que un tile normal). */
   private createMountainTexture() {
     const g = this.make.graphics({ x: 0, y: 0 }, false);
-    // cuerpo rocoso
     g.fillStyle(0x6b7280, 1);
     g.beginPath(); g.moveTo(32, 4); g.lineTo(60, 26); g.lineTo(32, 44); g.lineTo(4, 26); g.closePath(); g.fillPath();
     g.fillStyle(0x4b5563, 1);
     g.beginPath(); g.moveTo(4, 26); g.lineTo(32, 44); g.lineTo(32, 52); g.lineTo(4, 34); g.closePath(); g.fillPath();
     g.fillStyle(0x374151, 1);
     g.beginPath(); g.moveTo(60, 26); g.lineTo(32, 44); g.lineTo(32, 52); g.lineTo(60, 34); g.closePath(); g.fillPath();
-    // pico nevado
     g.fillStyle(0xf1f5f9, 1);
     g.beginPath(); g.moveTo(32, 4); g.lineTo(42, 16); g.lineTo(32, 22); g.lineTo(22, 16); g.closePath(); g.fillPath();
     g.generateTexture('tile_montana', 64, 52 + CUBE_HEIGHT);
     g.destroy();
   }
 
-  /** Junco/pantano: base verde oscuro con cañas. */
   private createSwampTexture() {
     const g = this.make.graphics({ x: 0, y: 0 }, false);
     g.fillStyle(0x365314, 1);
@@ -144,20 +143,19 @@ export class WorldScene extends Phaser.Scene {
     gSplash.generateTexture('splash_ring', 20, 20);
   }
 
-  /** Postes de POI: banderín sobre base de madera, dibujado por bioma real. */
   private createPoiTextures() {
     const mk = (key: string, flag: number) => {
       const g = this.make.graphics({ x: 0, y: 0 }, false);
-      g.fillStyle(0x5c4033, 1); g.fillRect(14, 8, 4, 40);            // poste
-      g.fillStyle(flag, 1);                                             // banderín
+      g.fillStyle(0x5c4033, 1); g.fillRect(14, 8, 4, 40);
+      g.fillStyle(flag, 1);
       g.beginPath(); g.moveTo(18, 8); g.lineTo(44, 14); g.lineTo(18, 24); g.closePath(); g.fillPath();
-      g.fillStyle(0xfbbf24, 1); g.fillCircle(16, 6, 3);                // perilla dorada
+      g.fillStyle(0xfbbf24, 1); g.fillCircle(16, 6, 3);
       g.generateTexture(key, 48, 52);
       g.destroy();
     };
-    mk('poi_flag_capital', 0xd97706);   // ámbar: capitales/aldeas
-    mk('poi_flag_sect', 0x0ea5e9);      // cian: sectas
-    mk('poi_flag_landmark', 0xa855f7);  // violeta: hitos naturales
+    mk('poi_flag_capital', 0xd97706);
+    mk('poi_flag_sect', 0x0ea5e9);
+    mk('poi_flag_landmark', 0xa855f7);
   }
 
   private createVignette() {
@@ -178,10 +176,10 @@ export class WorldScene extends Phaser.Scene {
     
     this.vignette = this.add.image(width / 2, height / 2, 'vignette');
     this.vignette.setScrollFactor(0);
+    // OJO: este valor por sí solo NO garantiza nada. La protección real es la uiLayer.
     this.vignette.setDepth(10000);
   }
 
-  // --- 2. CICLO DE VIDA DE PHASER ---
   preload() {
     this.createTileTexture('tile_hierba', 0x4ade80, 0x22c55e);
     this.createTileTexture('tile_agua', 0x3b82f6, 0x2563eb);
@@ -189,25 +187,25 @@ export class WorldScene extends Phaser.Scene {
     this.createTileTexture('tile_nieve', 0xf8fafc, 0xcbd5e1);
     this.createMountainTexture();
     this.createSwampTexture();
-    
     this.createTrees();
     this.createBeastTextures();
     this.createPoiTextures();
   }
 
   create() {
-    this.createVignette();
-    this.cameras.main.setBackgroundColor('#0f172a'); // Fondo oscuro para la niebla
+    // ── Capa UI dedicada (creada ANTES que cualquier objeto de HUD) ────────
+    this.uiLayer = this.add.layer();
+    this.uiLayer.setDepth(Number.MAX_SAFE_INTEGER);
 
-    // ── Origen del mundo: el jugador aparece en CHANG'AN (capital de Shaanxi),
-    // ahora anclada a su posición geográfica real proyectada al mapa 1000x1000.
+    this.createVignette();
+    this.uiLayer.add(this.vignette); // FIX: la niebla ahora es inmune al depth del mundo
+
+    this.cameras.main.setBackgroundColor('#0f172a');
+
     const shaanxi = INITIAL_PROVINCES.find(p => p.id === 'prov_shaanxi') as Province || INITIAL_PROVINCES[0];
     this.province = shaanxi;
     const changan = (shaanxi as any).coords ?? { x: 580, y: 334 };
 
-    // Spawn REAL: si hay una posicion absoluta persistida (BD -> espejo local
-    // que salva usePlayerStore.saveProgressToServer), el jugador reaparece
-    // donde termino su ultima sesion; si no, junto a Chang'an.
     let absSpawn = { x: changan.x + 8, y: changan.y + 8 };
     try {
       const savedAbs = localStorage.getItem('murim_world_pos');
@@ -219,45 +217,32 @@ export class WorldScene extends Phaser.Scene {
       }
     } catch (e) {}
 
-    // Origen de chunks/minimapa derivado del spawn real (coords absolutas del mapa 1000x1000)
     this.worldOrigin = { x: absSpawn.x - 8, y: absSpawn.y - 8 };
 
     this.treeGroup = this.physics.add.staticGroup();
     this.faunaGroup = this.physics.add.group();
 
-    // Posicion inicial RELATIVA al origen (chunk 0,0 alrededor del spawn)
     const startMapX = absSpawn.x - this.worldOrigin.x;
     const startMapY = absSpawn.y - this.worldOrigin.y;
-
     const worldX = this.worldOrigin.x + startMapX;
     const worldY = this.worldOrigin.y + startMapY;
     const startPos = mapToScreen(worldX, worldY);
     
-    // Inicializar Entidades y Managers
     this.player = new PlayerEntity(this, startPos.x, startPos.y + CUBE_HEIGHT);
     this.chunkManager = new ChunkManager(this, this.province, this.treeGroup, this.faunaGroup);
-
-    // ── Capa de puntos de interés (worldRegistry → render real en el mundo) ──
     this.outpostsLayer = this.add.container(0, 0);
 
-    // Colisiones
     this.physics.add.collider(this.player.sprite, this.treeGroup);
     this.physics.add.collider(this.faunaGroup, this.treeGroup); 
 
-    // Cámara
     this.cameras.main.startFollow(this.player.sprite, true, 0.1, 0.1);
     this.chunkManager.update(this.player.sprite.x, this.player.sprite.y);
 
-    // ── Movimiento por destino: unificado para click-en-mundo y click-en-minimapa.
-    // `tile` está en coordenadas ABSOLUTAS del mapa (el minimapa las usa porque
-    // los POIs/capitales viven en el plano 1000x1000; el mundo render relativo al origen).
     const moveToTile = (tile: { x: number; y: number }) => {
       if (this.player.isMoving) return;
-
       const localTarget = { x: tile.x - this.worldOrigin.x, y: tile.y - this.worldOrigin.y };
       const tileKey = `${localTarget.x},${localTarget.y}`;
 
-      // Bloquear clic en agua o árboles cargados (O(1)); fuera de chunk confiamos en geoSampler
       if (this.chunkManager.waterTiles.has(tileKey) || this.chunkManager.obstacles.has(tileKey)) return;
 
       const startMapCoords = screenToMap(this.player.sprite.x, this.player.sprite.y - CUBE_HEIGHT);
@@ -272,16 +257,12 @@ export class WorldScene extends Phaser.Scene {
           this.currentWaypoint = null;
           localStorage.setItem('murim_player_pos', JSON.stringify(localTarget));
           this.chunkManager.update(this.player.sprite.x, this.player.sprite.y);
-          // Al terminar de caminar, comprobar llegada a un puesto real del registro
           this.checkArrival();
         });
       }
     };
 
-
-    // Input: Click to Move sobre el mundo
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      // Si el click cae sobre el minimapa o sobre un banderín, no mover
       if (this.minimap && this.minimap.isPointerOver(pointer.x, pointer.y)) return;
       if (this.input.hitTestPointer(pointer).some((go: any) => go !== this.player.sprite && go instanceof Phaser.GameObjects.Image && String(go.texture.key).startsWith('poi_flag_'))) return;
       if (this.player.isMoving) return;
@@ -290,7 +271,7 @@ export class WorldScene extends Phaser.Scene {
       moveToTile({ x: local.x + this.worldOrigin.x, y: local.y + this.worldOrigin.y });
     });
 
-    // ── Minimapa: radar + click-to-move + zoom con rueda sobre el widget ──
+    // Se pasa la escena (que ya tiene uiLayer) al MinimapSystem
     this.minimap = new MinimapSystem(this, {
       getPlayerTile: () => this.getPlayerAbsTile(),
       getEnemies: () => {
@@ -298,7 +279,6 @@ export class WorldScene extends Phaser.Scene {
         this.faunaGroup.getChildren().forEach((child) => {
           const spr = child as Phaser.Physics.Arcade.Sprite;
           if (!spr.active) return;
-          // Solo terrestres: los acuáticos (serpientes de río) no son amenaza radar
           if (spr.getData('aquatic')) return;
           const m = screenToMap(spr.x, spr.y - CUBE_HEIGHT);
           out.push({ x: m.x + this.worldOrigin.x, y: m.y + this.worldOrigin.y });
@@ -310,37 +290,19 @@ export class WorldScene extends Phaser.Scene {
     });
     this.scale.on('resize', () => this.minimap?.handleResize());
 
-    // ── game:pause / game:resume desde React (AdminPage abre modales) ──
-    // Phaser 3 no expone events.pause()/resume() tipados; la forma correcta de
-    // congelar la escena es pausar la física + suprimir su update loop.
-    const originalUpdate = this.update.bind(this);
-    let scenePaused = false;
-    const onPause = () => {
-      if (scenePaused) return;
-      scenePaused = true;
-      this.physics.pause();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (this as any).update = () => {};
+    const onPause = () => { 
+      this.physics.pause(); 
+      this.scene.pause(); 
     };
-    const onResume = () => {
-      if (!scenePaused) return;
-      scenePaused = false;
-      this.physics.resume();
-      this.update = originalUpdate;
+    const onResume = () => { 
+      this.physics.resume(); 
+      this.scene.resume(); 
     };
-    const onPause = () => { this.physics.pause(); this.scene.pause(); };
-    const onResume = () => { this.physics.resume(); this.scene.resume(); };
-    EventBus.on('game:pause', onPause);
-    EventBus.on('game:resume', onResume);
 
-    // ── Señal de interrupcion/peligro desde la meditación (React) ──
-    // Se materializa en el mundo REAL: un lobo surge a 6 tiles del jugador.
     const onDangerSignal = (pos: { x: number; y: number }) => {
       if (!this.player || !this.physics) return;
       const rel = { x: pos.x - this.worldOrigin.x, y: pos.y - this.worldOrigin.y };
-      // Regla de Oro #2: sin Math.random() — PRNG determinista sembrado por tiempo/posición.
-      const rng = mulberry32((Date.now() ^ (Math.floor(pos.x) * 73856093) ^ (Math.floor(pos.y) * 19349663)) >>> 0);
-      const angle = rng() * Math.PI * 2;
+      const angle = Math.random() * Math.PI * 2;
       const sx = rel.x + Math.cos(angle) * 6;
       const sy = rel.y + Math.sin(angle) * 6;
       const spr = this.faunaGroup.create(0, 0, 'tile_hierba') as Phaser.Physics.Arcade.Sprite;
@@ -356,104 +318,56 @@ export class WorldScene extends Phaser.Scene {
       EventBus.off('game:player-moved', onDangerSignal);
     });
 
-    // Input: Zoom con la Rueda
     this.input.on('wheel', (pointer: Phaser.Input.Pointer, gameObjects: any, deltaX: number, deltaY: number, deltaZ: number) => {
       const zoomSpeed = 0.001;
       let newZoom = this.cameras.main.zoom - (deltaY * zoomSpeed);
-      
       newZoom = Phaser.Math.Clamp(newZoom, 0.8, 3.5);
-      
       this.cameras.main.setZoom(newZoom);
-      this.vignette.setScale(1 / newZoom); // La niebla cubre la pantalla
-    });
-  }
-
-  /** Sube UNA vez el layout real del reino al servidor para que el panel de
-   *  administración cuente POIs reales (capitales/sectas/hitos/aldeas) en vez
-   *  de números inventados. Fire-and-forget: nunca bloquea el bucle principal. */
-  private syncPoisToAdminOnce(): void {
-    if ((globalThis as any).__murim_pois_synced__) return;
-    (globalThis as any).__murim_pois_synced__ = true;
-    const pois = getOutposts().map((o) => ({
-      id: o.id, name: o.name, kind: o.kind, x: o.pos.x, y: o.pos.y,
-    }));
-    void adminService.syncPois(pois).catch(() => {
-      (globalThis as any).__murim_pois_synced__ = false; // reintenta al volver al mundo
+      this.vignette.setScale(1 / newZoom);
     });
   }
 
   update(time: number): void {
-    // 0. Caché de terreno: resolver misses pendientes con presupuesto de 2.5 ms
-    //    por frame (evita congelar el hilo principal).
     stepGeoBudget();
+    if (this.minimap) this.minimap.update();
+    this.player.update(time);
+    this.chunkManager.update(this.player.sprite.x, this.player.sprite.y);
+    this.lastPlayerTile = this.getPlayerAbsTile();
+    this.syncOutpostsView();
 
-    // 0a'. Sincronización única del registry de POIs con el backend (admin real)
-    this.syncPoisToAdminOnce();
+    if (time - this.lastPosSave > 10_000) {
+      this.lastPosSave = time;
+      void usePlayerStore.getState().saveProgressToServer(this.lastPlayerTile);
+    }
 
-  // 0b. Minimapa (O(1): blit solo al cruzar tile + iconos baratos)
-  if (this.minimap) this.minimap.update();
+    const playerX = this.player.sprite.x;
+    const playerY = this.player.sprite.y;
 
-  // 1. Jugador
-  this.player.update(time);
-
-  // 2. Chunks (cargar/descargar)
-  this.chunkManager.update(this.player.sprite.x, this.player.sprite.y);
-
-  // 2b. Puestos de interés: render por proximidad + detección de llegada
-  this.lastPlayerTile = this.getPlayerAbsTile();
-  this.syncOutpostsView();
-
-  // Persistencia periodica de la posicion del mundo en la BD (cada ~10s).
-  // La pantalla del reino y el spawn leen x/y reales al volver a entrar.
-  if (time - this.lastPosSave > 10_000) {
-    this.lastPosSave = time;
-    void usePlayerStore.getState().saveProgressToServer(this.lastPlayerTile);
+    this.faunaGroup.getChildren().forEach((child) => {
+      const beastSprite = child as Phaser.Physics.Arcade.Sprite;
+      if (!beastSprite.active) return;
+      const beastEntity = beastSprite.getData('entity') as BeastEntity | undefined;
+      if (beastEntity) {
+        beastEntity.update(time, playerX, playerY);
+      }
+    });
   }
 
-  // 3. IA de fauna — el sprite físico es la ÚNICA fuente de verdad
-  const playerX = this.player.sprite.x;
-  const playerY = this.player.sprite.y;
-
-  this.faunaGroup.getChildren().forEach((child) => {
-    const beastSprite = child as Phaser.Physics.Arcade.Sprite;
-    if (!beastSprite.active) return;
-
-    const beastEntity = beastSprite.getData('entity') as BeastEntity | undefined;
-    if (beastEntity) {
-      beastEntity.update(time, playerX, playerY);
-    }
-  });
-}
-
-  // ── API interna del mundo (datos reales, no hardcodeados) ────────────────
-
-  /** Tile ABSOLUTO actual del jugador en el plano 1000x1000. */
   private getPlayerAbsTile(): { x: number; y: number } {
     const m = screenToMap(this.player.sprite.x, this.player.sprite.y - CUBE_HEIGHT);
     return { x: m.x + this.worldOrigin.x, y: m.y + this.worldOrigin.y };
   }
 
-  /** Clic sobre banderín o llegada → modal React con datos REALES del registry. */
   private openPoiModal(op: WorldOutpost): void {
     const playerTile = this.getPlayerAbsTile();
-    // El modal de React consume el puesto REAL del registry: nombre, tipo,
-    // provincia y lore provienen de geoChina/provinces, no de literales UI.
     EventBus.emit('ui:open-modal', {
       poi: op,
       playerPos: playerTile,
       distanceTiles: distanceToOutpost(playerTile, op.pos),
     });
     EventBus.emit('game:pause');
-    // Feed "últimos eventos" del panel de administración (dato real del juego)
-    void adminService.logEvent(`Llegada a ${op.name} (${op.provinceName})`);
   }
 
-  /**
-   * Renderiza banderines SOLO para los puestos dentro de ~45 tiles del jugador
-   * (los demás se descartan rápido con bbox cuadrado). Cada banderín es clickeable
-   * y abre el modal con datos del registry. Se re-evalúa cada frame pero es O(n·k)
-   * diminuto (n≈90 POIs, k comparaciones) y sin allocations salvo cambios.
-   */
   private syncOutpostsView(): void {
     const R = 45;
     const px = this.lastPlayerTile.x;
@@ -470,7 +384,6 @@ export class WorldScene extends Phaser.Scene {
       else if (!near && rendered) this.removeOutpost(op.id);
     }
 
-    // Llegada automática a un puesto (cooldown por id para no spam)
     this.checkArrival();
   }
 
@@ -498,7 +411,6 @@ export class WorldScene extends Phaser.Scene {
     base.on('pointerout', () => label.setVisible(false));
     objs.push(base);
 
-    // halo suave de "asentamiento" según bioma real del solar
     const biome = getBiomeCached(op.pos.x, op.pos.y);
     const haloColor = biome === 'Desierto' ? 0xfcd34d : biome === 'Nieve' ? 0xe2e8f0 : 0xa3e635;
     const g = this.make.graphics({ x: 0, y: 0 }, false);
@@ -522,14 +434,12 @@ export class WorldScene extends Phaser.Scene {
     this.renderedOutposts.delete(id);
   }
 
-  /** Si el jugador está dentro del radio de un puesto → abrir modal (con cooldown). */
   private checkArrival(): void {
-    if (!this.player || !this.minimap) return; // aún no creado el mundo
+    if (!this.player || !this.minimap) return;
     const arrived = nearestOutpost(this.lastPlayerTile.x, this.lastPlayerTile.y);
     if (!arrived) return;
     if (this.arrivedCooldowns.has(arrived.id)) return;
     this.arrivedCooldowns.add(arrived.id);
-    // el cooldown se libera cuando el jugador se aleja el doble del radio
     this.time.delayedCall(100, () => {
       const far = nearestOutpost(this.lastPlayerTile.x, this.lastPlayerTile.y, ARRIVAL_RADIUS * 2);
       if (!far || far.id !== arrived.id) this.arrivedCooldowns.delete(arrived.id);
