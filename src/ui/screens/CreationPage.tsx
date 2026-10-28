@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { usePlayerStore } from '../../core/store/usePlayerStore';
+import { usePlayerStore, DEFAULT_APPEARANCE } from '../../core/store/usePlayerStore';
 import { useAuthStore } from '../../core/store/useAuthStore';
 import { Dices, Shield, Swords, ArrowRight, Skull, Crown, Store, Sparkles } from 'lucide-react';
 import { generateRandomName } from '../../core/utils/nameGenerator';
@@ -107,6 +107,7 @@ export const CreationPage = () => {
           name, 
           gender,
           birthdate: birthDate,
+          appearance: appearance ?? { ...DEFAULT_APPEARANCE },
           attributes: finalStats,
           hp: calculatedHp,
           maxHp: calculatedHp,

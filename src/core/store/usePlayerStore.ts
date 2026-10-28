@@ -1,5 +1,12 @@
 import { create } from 'zustand';
-import { PlayerData, CultivatorAttributes, PlayerAppearance } from '../../types/player.types';
+import {
+  PlayerData,
+  CultivatorAttributes,
+  PlayerAppearance,
+  PlayerEquipment,
+  WeaponType,
+  ArmorType,
+} from '../../types/player.types';
 import { playerService } from '../services/playerService';
 import { adminService } from '../services/adminService';
 import { EventBus } from '../../game/events/EventBus';
@@ -32,6 +39,11 @@ export const DEFAULT_APPEARANCE: PlayerAppearance = {
   accessoryType: 0,
 };
 
+export const DEFAULT_EQUIPMENT: PlayerEquipment = {
+  weapon: 'wooden-sword',
+  armor: 'disciple',
+};
+
 export interface PlayerStoreState extends PlayerData {
   // Estado de sesión y control
   playerId: string | null;
@@ -44,8 +56,12 @@ export interface PlayerStoreState extends PlayerData {
   isMeditating: boolean;
   meditationLocation: 'private' | 'world' | null;
 
+  equipment: PlayerEquipment;
+
   // Métodos de mutación
   setPlayer: (data: Partial<PlayerStoreState>) => void;
+  equipWeapon: (weapon: WeaponType) => void;
+  equipArmor: (armor: ArmorType) => void;
   startMeditation: (location: 'private' | 'world') => void;
   stopMeditation: () => void;
   tickCultivation: () => void | Promise<void>;
@@ -81,6 +97,7 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
   
   attributes: { ...DEFAULT_ATTRIBUTES },
   appearance: { ...DEFAULT_APPEARANCE }, // <-- Solucionado con la estructura real
+  equipment: { ...DEFAULT_EQUIPMENT },
   
   cb_actual: 0,
   cb_requerido: 100,
@@ -92,6 +109,14 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
   // --- MÉTODOS ---
 
   setPlayer: (data) => set((state) => ({ ...state, ...data })),
+
+  equipWeapon: (weapon) => set((state) => ({
+    equipment: { ...state.equipment, weapon },
+  })),
+
+  equipArmor: (armor) => set((state) => ({
+    equipment: { ...state.equipment, armor },
+  })),
 
   startMeditation: (location) => {
     // Evitar iniciar si ya está meditando
@@ -203,6 +228,7 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
       sectMerits: 0,
       attributes: { ...DEFAULT_ATTRIBUTES },
       appearance: { ...DEFAULT_APPEARANCE }, // Restablecer apariencia
+      equipment: { ...DEFAULT_EQUIPMENT },
       cb_actual: 0,
       cb_requerido: 100,
       eficienciaBase: 5,

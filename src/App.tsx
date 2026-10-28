@@ -1,7 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { useAuthStore } from './core/store/useAuthStore';
-import { usePlayerStore } from './core/store/usePlayerStore';
+import { usePlayerStore, DEFAULT_APPEARANCE } from './core/store/usePlayerStore';
 import { playerService } from './core/services/playerService';
 import type { CultivatorAttributes } from './types/player.types';
 
@@ -53,7 +53,7 @@ export default function App() {
             lineage: p.origin ?? 'Comun',
             faction: p.faction ?? 'Errante',
             attributes: p.stats_json as unknown as CultivatorAttributes,
-            appearance: (p.appearance_json as never) ?? undefined,
+            appearance: { ...DEFAULT_APPEARANCE, ...(p.appearance_json ?? {}) },
             hp, maxHp, qi, maxQi,
             spiritStones: p.spirit_stones ?? 250,
             sectMerits: p.sect_merits ?? 0,

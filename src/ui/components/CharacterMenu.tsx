@@ -1,26 +1,63 @@
 // src/ui/components/CharacterMenu.tsx
 import { useState } from 'react';
 import { usePlayerStore } from '../../core/store/usePlayerStore';
+import { ArmorType, WeaponType } from '../../types/player.types';
 import { 
   Sword, Shield, Crown, Shirt, Footprints, Gem, 
-  Backpack, User, Star, ScrollText, X 
+  Backpack, Star, ScrollText, X 
 } from 'lucide-react';
 
 interface Props {
   onClose: () => void;
 }
 
+const WEAPON_OPTIONS: Array<{ id: WeaponType; label: string }> = [
+  { id: 'wooden-sword', label: 'Espada de Madera' },
+  { id: 'iron-sword', label: 'Espada de Hierro' },
+  { id: 'frost-sword', label: 'Espada de Escarcha' },
+  { id: 'none', label: 'Sin Arma' },
+];
+
+const ARMOR_OPTIONS: Array<{ id: ArmorType; label: string }> = [
+  { id: 'disciple', label: 'Túnica de Discípulo' },
+  { id: 'jade', label: 'Túnica de Jade' },
+  { id: 'crimson', label: 'Túnica Carmesí' },
+];
+
+const ARMOR_PREVIEW: Record<ArmorType, string> = {
+  disciple: '',
+  jade: '#2f6b4f',
+  crimson: '#7a2331',
+};
+
 export const CharacterMenu = ({ onClose }: Props) => {
-  const { name, realmName, hp, maxHp, qi, maxQi, attributes, appearance } = usePlayerStore();
+  const {
+    name, realmName, hp, maxHp, qi, maxQi, attributes, appearance,
+    equipment, equipWeapon, equipArmor,
+  } = usePlayerStore();
   const [rightTab, setRightTab] = useState<'stats' | 'inventory'>('stats');
 
+  const weaponLabel = WEAPON_OPTIONS.find((w) => w.id === equipment.weapon)?.label ?? 'Sin Arma';
+  const armorLabel = ARMOR_OPTIONS.find((a) => a.id === equipment.armor)?.label ?? 'Túnica de Discípulo';
+  const torsoColor = ARMOR_PREVIEW[equipment.armor] || appearance?.outfitColor || '#2d4a22';
+
+  const cycleWeapon = () => {
+    const index = WEAPON_OPTIONS.findIndex((w) => w.id === equipment.weapon);
+    equipWeapon(WEAPON_OPTIONS[(index + 1) % WEAPON_OPTIONS.length].id);
+  };
+
+  const cycleArmor = () => {
+    const index = ARMOR_OPTIONS.findIndex((a) => a.id === equipment.armor);
+    equipArmor(ARMOR_OPTIONS[(index + 1) % ARMOR_OPTIONS.length].id);
+  };
+
   const equipmentSlots = [
-    { id: 'head', label: 'Cabeza', icon: Crown, item: 'Cinta de Seda' },
-    { id: 'chest', label: 'Túnica', icon: Shirt, item: 'Túnica de Discípulo' },
-    { id: 'weapon', label: 'Arma', icon: Sword, item: 'Espada de Madera' },
-    { id: 'offhand', label: 'Mano Izq.', icon: Shield, item: 'Vacío' },
-    { id: 'feet', label: 'Calzado', icon: Footprints, item: 'Botas de Tela' },
-    { id: 'accessory', label: 'Amuleto', icon: Gem, item: 'Jade Menor' },
+    { id: 'head', label: 'Cabeza', icon: Crown, item: 'Cinta de Seda', action: undefined },
+    { id: 'chest', label: 'Túnica', icon: Shirt, item: armorLabel, action: cycleArmor },
+    { id: 'weapon', label: 'Arma', icon: Sword, item: weaponLabel, action: cycleWeapon },
+    { id: 'offhand', label: 'Mano Izq.', icon: Shield, item: 'Vacío', action: undefined },
+    { id: 'feet', label: 'Calzado', icon: Footprints, item: 'Botas de Tela', action: undefined },
+    { id: 'accessory', label: 'Amuleto', icon: Gem, item: 'Jade Menor', action: undefined },
   ];
 
   const inventorySlots = Array(15).fill(null).map((_, i) => {
@@ -51,16 +88,34 @@ export const CharacterMenu = ({ onClose }: Props) => {
           <div className="w-full xl:w-64 flex flex-col gap-2 shrink-0">
             <h3 className="text-xs text-stone-500 uppercase tracking-widest mb-2 border-b border-stone-800 pb-1">Equipamiento</h3>
             {equipmentSlots.map((slot) => (
-              <div key={slot.id} className="group bg-stone-950 border border-stone-800 hover:border-amber-500/50 rounded-lg p-2 flex items-center gap-3 cursor-pointer transition-colors">
+              <button
+                key={slot.id}
+                type="button"
+                onClick={slot.action}
+                disabled={!slot.action}
+                className={`group bg-stone-950 border border-stone-800 rounded-lg p-2 flex items-center gap-3 text-left transition-colors ${
+                  slot.action
+                    ? 'cursor-pointer hover:border-amber-500/70 hover:bg-stone-900'
+                    : 'cursor-default'
+                }`}
+              >
                 <div className="w-10 h-10 bg-stone-900 rounded flex items-center justify-center border border-stone-700 shadow-inner">
                   <slot.icon className="w-5 h-5 text-stone-500 group-hover:text-amber-400 transition-colors" />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <p className="text-[9px] text-stone-500 uppercase tracking-wider">{slot.label}</p>
-                  <p className="text-sm text-stone-300 font-semibold">{slot.item}</p>
+                  <p className="text-sm text-stone-300 font-semibold truncate">{slot.item}</p>
                 </div>
-              </div>
+                {slot.action && (
+                  <span className="ml-auto text-[8px] font-bold uppercase tracking-wider text-amber-500/80">
+                    Equipar
+                  </span>
+                )}
+              </button>
             ))}
+            <p className="text-[9px] text-stone-600 italic mt-1">
+              Clic en túnica o arma para cambiar el equipo del avatar.
+            </p>
           </div>
 
           {/* COLUMNA CENTRAL: PAPERDOLL */}
@@ -79,7 +134,7 @@ export const CharacterMenu = ({ onClose }: Props) => {
                       <div className="w-2 h-2 rounded-full bg-black" />
                     </div>
                   </div>
-                  <div className="w-20 h-28 rounded-t-[40%] rounded-b-xl shadow-lg mt-[-8px]" style={{ backgroundColor: appearance?.outfitColor || '#2d4a22' }} />
+                  <div className="w-20 h-28 rounded-t-[40%] rounded-b-xl shadow-lg mt-[-8px]" style={{ backgroundColor: torsoColor }} />
                </div>
             </div>
 

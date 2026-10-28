@@ -4,7 +4,7 @@
 // sistema: zoom/radio, forma, cadencia de refresco y colores de los iconos.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type MinimapShape = 'circle' | 'square';
+export type MinimapShape = 'circle' | 'square' | 'diamond';
 
 export interface MinimapConfig {
   /** Diámetro del minimapa en píxeles de pantalla (esquina inferior derecha). */
@@ -38,20 +38,20 @@ export const MINIMAP_DEFAULTS: MinimapConfig = {
   viewRadiusTiles: 64,      // ±64 tiles visibles en el radar
   viewRadiusMinTiles: 24,
   viewRadiusMaxTiles: 150,
-  shape: 'circle',
+  shape: 'diamond',
   scanIntervalMs: 100,      // 10 Hz: barato y suficiente para un RPG isométrico
   marginPx: 16,
   colors: {
-    border: 0xd4a94e,       // oro imperial
-    background: 0x0b1120,
-    player: 0xf8fafc,
-    enemy: 0xef4444,
-    objective: 0xfacc15,
-    waypoint: 0x38bdf8,
-    water: 0x1d4ed8,
-    mountain: 0x475569,
-    desert: 0xca8a04,
-    road: 0xa16207,
-    viewport: 0x94a3b8,
+    border: 0xb08d43,       // oro envejecido
+    background: 0x05070a,
+    player: 0xe8e2d2,
+    enemy: 0xb3453f,
+    objective: 0xc9a34a,
+    waypoint: 0x6f93a8,
+    water: 0x1c3340,
+    mountain: 0x3d3c3a,
+    desert: 0x5a4a33,
+    road: 0x544a37,
+    viewport: 0x6d6a5e,
   },
 };

@@ -31,6 +31,17 @@ export interface PlayerAppearance {
 /** Género jugable según el creador de personaje (contrato con la BD). */
 export type PlayerGender = 'Hombre' | 'Mujer' | 'Otro';
 
+/** Armas que el avatar procedural sabe dibujar. */
+export type WeaponType = 'none' | 'wooden-sword' | 'iron-sword' | 'frost-sword';
+
+/** Armaduras que alteran el polígono y la paleta del torso. */
+export type ArmorType = 'disciple' | 'jade' | 'crimson';
+
+export interface PlayerEquipment {
+  weapon: WeaponType;
+  armor: ArmorType;
+}
+
 export type DantianScale = 
   | 'Gota' | 'Cáliz' | 'Estanque' | 'Lago' 
   | 'Mar' | 'Océano' | 'Firmamento' | 'Cosmos' | 'Primordial';

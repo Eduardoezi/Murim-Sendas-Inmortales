@@ -24,6 +24,7 @@ export class MinimapSystem {
   private opts: MinimapOptions;
 
   private container!: Phaser.GameObjects.Container;
+  private bgGfx!: Phaser.GameObjects.Graphics;
   private terrainCanvas!: Phaser.GameObjects.Image;
   private icons!: Phaser.GameObjects.Graphics;
   private frameGfx!: Phaser.GameObjects.Graphics;
@@ -79,6 +80,11 @@ export class MinimapSystem {
   public setVisible(v: boolean): void { this.container.setVisible(v); }
 
   public isPointerOver(px: number, py: number): boolean {
+    const lx = px - this.container.x;
+    const ly = py - this.container.y;
+    if (this.cfg.shape === 'diamond') {
+      return Math.abs(lx - this.cfg.sizePx / 2) + Math.abs(ly - this.cfg.sizePx / 2) <= this.cfg.sizePx / 2;
+    }
     return this.container.getBounds().contains(px, py);
   }
 
@@ -99,7 +105,7 @@ export class MinimapSystem {
 
     if (!this.scene.textures.exists('__minimap_px')) {
       const pg = this.scene.make.graphics({ x: 0, y: 0 }, false);
-      pg.fillStyle(0xffffff, 1).fillRect(0, 0, 1, 1);
+      pg.fillStyle(0x070908, 1).fillRect(0, 0, 1, 1);
       pg.generateTexture('__minimap_px', 1, 1);
       pg.destroy();
     }
@@ -108,13 +114,14 @@ export class MinimapSystem {
       .setOrigin(0, 0)
       .setDisplaySize(sizePx, sizePx);
 
+    this.bgGfx = this.scene.add.graphics();
     this.icons = this.scene.add.graphics();
     this.frameGfx = this.scene.add.graphics();
     this.label = this.scene.add.text(0, 0, '', {
-      fontFamily: 'monospace', fontSize: '10px', color: '#e2e8f0', backgroundColor: '#0b1120cc', padding: { x: 4, y: 1 },
+      fontFamily: 'monospace', fontSize: '10px', color: '#ddd8c8', backgroundColor: '#05070bcc', padding: { x: 4, y: 1 },
     }).setOrigin(0.5, 0).setVisible(false);
 
-    this.container = this.scene.add.container(0, 0, [this.terrainCanvas, this.icons, this.frameGfx, this.label]);
+    this.container = this.scene.add.container(0, 0, [this.bgGfx, this.terrainCanvas, this.icons, this.frameGfx, this.label]);
     
     // Depth seguro para estar por encima de los árboles, pero sin romper WebGL
     this.container.setScrollFactor(0).setDepth(50000); 
@@ -135,6 +142,16 @@ export class MinimapSystem {
     const s = this.cfg.sizePx;
     if (this.cfg.shape === 'circle') {
       this.container.setInteractive(new Phaser.Geom.Circle(s / 2, s / 2, s / 2), Phaser.Geom.Circle.Contains);
+    } else if (this.cfg.shape === 'diamond') {
+      this.container.setInteractive(
+        new Phaser.Geom.Polygon([
+          new Phaser.Geom.Point(s / 2, 0),
+          new Phaser.Geom.Point(s, s / 2),
+          new Phaser.Geom.Point(s / 2, s),
+          new Phaser.Geom.Point(0, s / 2),
+        ]),
+        Phaser.Geom.Polygon.Contains,
+      );
     } else {
       this.container.setInteractive(new Phaser.Geom.Rectangle(0, 0, s, s), Phaser.Geom.Rectangle.Contains);
     }
@@ -142,18 +159,46 @@ export class MinimapSystem {
 
   private drawFrame(): void {
     const { sizePx, colors, shape } = this.cfg;
-    const g = this.frameGfx;
-    g.clear();
-    
-    g.fillStyle(colors.background, 0.85);
-    g.fillCircle(sizePx / 2, sizePx / 2, sizePx / 2);
+    const s = sizePx;
+    const c = s / 2;
+    const bg = this.bgGfx;
+    const fg = this.frameGfx;
+    bg.clear();
+    fg.clear();
 
-    g.lineStyle(2, colors.border, 1);
-    if (shape === 'circle') g.strokeCircle(sizePx / 2, sizePx / 2, sizePx / 2 - 1);
-    else g.strokeRect(1, 1, sizePx - 2, sizePx - 2);
-    
-    g.fillStyle(colors.border, 1);
-    g.fillTriangle(sizePx / 2, 6, sizePx / 2 - 4, 14, sizePx / 2 + 4, 14);
+    if (shape === 'diamond') {
+      // Fondo bajo el terreno (el recorte solo pinta dentro del rombo).
+      bg.fillStyle(colors.background, 1);
+      bg.fillPoints([
+        { x: c, y: 1 }, { x: s - 1, y: c }, { x: c, y: s - 1 }, { x: 1, y: c },
+      ], true);
+
+      fg.lineStyle(2, colors.border, 1);
+      fg.strokePoints([
+        { x: c, y: 2 }, { x: s - 2, y: c }, { x: c, y: s - 2 }, { x: 2, y: c },
+      ], true, true);
+      fg.lineStyle(1, 0x5c4a26, 0.9);
+      fg.strokePoints([
+        { x: c, y: 7 }, { x: s - 7, y: c }, { x: c, y: s - 7 }, { x: 7, y: c },
+      ], true, true);
+
+      // Muesca/brújula en la punta norte del rombo.
+      fg.fillStyle(colors.border, 1);
+      fg.fillTriangle(c, 3, c - 4, 11, c + 4, 11);
+      fg.fillStyle(colors.background, 1);
+      fg.fillTriangle(c, 7, c - 2, 11.5, c + 2, 11.5);
+      return;
+    }
+
+    bg.fillStyle(colors.background, 1);
+    bg.fillCircle(c, c, c);
+
+    fg.lineStyle(2, colors.border, 1);
+    if (shape === 'circle') fg.strokeCircle(c, c, c - 1);
+    else fg.strokeRect(1, 1, s - 2, s - 2);
+
+    fg.fillStyle(colors.border, 1);
+    fg.fillTriangle(c, 6, c - 4, 14, c + 4, 14);
   }
 
   private relayout(): void {
@@ -228,14 +273,23 @@ export class MinimapSystem {
     ctx.imageSmoothingEnabled = false;
     ctx.clearRect(0, 0, this.cfg.sizePx, this.cfg.sizePx);
 
-    // 🔥 LA MAGIA: Recortar el círculo en el Canvas 2D nativo (Cero uso de WebGL Masks)
+    // Recorte en Canvas 2D nativo (cero uso de WebGL Masks): círculo o rombo isométrico.
+    const s = this.cfg.sizePx;
     ctx.save();
+    ctx.beginPath();
     if (this.cfg.shape === 'circle') {
-      ctx.beginPath();
-      ctx.arc(this.cfg.sizePx / 2, this.cfg.sizePx / 2, this.cfg.sizePx / 2, 0, Math.PI * 2);
-      ctx.clip();
+      ctx.arc(s / 2, s / 2, s / 2, 0, Math.PI * 2);
+    } else if (this.cfg.shape === 'diamond') {
+      ctx.moveTo(s / 2, 1);
+      ctx.lineTo(s - 1, s / 2);
+      ctx.lineTo(s / 2, s - 1);
+      ctx.lineTo(1, s / 2);
+      ctx.closePath();
+    } else {
+      ctx.rect(0, 0, s, s);
     }
-    ctx.drawImage(this.worldCanvas, rx, ry, w, w, 0, 0, this.cfg.sizePx, this.cfg.sizePx);
+    ctx.clip();
+    ctx.drawImage(this.worldCanvas, rx, ry, w, w, 0, 0, s, s);
     ctx.restore();
 
     if (!this.cropTex) {
@@ -252,7 +306,7 @@ export class MinimapSystem {
   private redrawFullTerrainCache(): void {
     if (!this.worldCtx) return;
     this.terrainDirty = true;
-    this.worldCtx.fillStyle = '#0b1120';
+    this.worldCtx.fillStyle = '#070908';
     this.worldCtx.fillRect(0, 0, GRID.width, GRID.height);
 
     const playerRow = Math.floor(this.opts.getPlayerTile().y);
@@ -307,20 +361,20 @@ export class MinimapSystem {
 
   private waterShadeCached(tx: number, ty: number): string {
     const g = sampleGeoCached(tx, ty).kind;
-    if (g === 'canal') return '#38bdf8';
-    if (g === 'mar') return '#1e40af';
-    return '#2563eb';
+    if (g === 'canal') return '#2c5260';
+    if (g === 'mar') return '#102536';
+    return '#1b394a';
   }
 
   private biomeShade(b: string): string {
     switch (b) {
-      case 'Bosque': return '#14532d';
-      case 'Montaña': return '#44403c';
-      case 'Desierto': return '#a16207';
-      case 'Pantano': return '#3f6212';
-      case 'Nieve': return '#e2e8f0';
-      case 'Costa': return '#0e7490';
-      default: return '#3f5f3a';
+      case 'Bosque': return '#3a432f';
+      case 'Montaña': return '#3c3b39';
+      case 'Desierto': return '#5a4a33';
+      case 'Pantano': return '#303725';
+      case 'Nieve': return '#7d8387';
+      case 'Costa': return '#283b41';
+      default: return '#343c2e';
     }
   }
 
@@ -368,6 +422,9 @@ export class MinimapSystem {
     if (this.cfg.shape === 'circle') {
       const len = Math.hypot(dx, dy) || 1;
       t = (this.radiusPx - size - 2) / len;
+    } else if (this.cfg.shape === 'diamond') {
+      const m = this.radiusPx - size - 2;
+      t = m / ((Math.abs(dx) + Math.abs(dy)) || 1e-6);
     } else {
       const m = this.radiusPx - size - 2;
       t = Math.min(m / (Math.abs(dx) || 1e-6), m / (Math.abs(dy) || 1e-6));
@@ -382,6 +439,7 @@ export class MinimapSystem {
 
   private insideShape(lx: number, ly: number): boolean {
     if (this.cfg.shape === 'circle') return Math.hypot(lx - this.cx, ly - this.cy) <= this.radiusPx;
+    if (this.cfg.shape === 'diamond') return Math.abs(lx - this.cx) + Math.abs(ly - this.cy) <= this.radiusPx;
     return Math.abs(lx - this.cx) <= this.radiusPx && Math.abs(ly - this.cy) <= this.radiusPx;
   }
 
@@ -409,7 +467,7 @@ export class MinimapSystem {
     });
 
     this.wheelHandler = (ptr, _go, _dx, dy) => {
-      if (!this.container.getBounds().contains(ptr.x, ptr.y)) return;
+      if (!this.isPointerOver(ptr.x, ptr.y)) return;
       const dir = dy > 0 ? 1 : -1;
       this.setViewRadius(this.cfg.viewRadiusTiles + dir * 8);
     };

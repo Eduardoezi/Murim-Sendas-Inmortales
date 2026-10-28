@@ -4,18 +4,23 @@ import { generateChunkFauna } from '../../core/data/world/generators/faunaGenera
 import { mulberry32, stringToHash } from '../../core/utils/prng';
 import { Province } from '../../core/data/world/types';
 import { sampleGeoCached } from '../../core/data/world/generators/geoTileCache';
+import { getInstanceInChunk, INSTANCE_COLOR } from '../../core/data/world/generators/instanceGenerator';
+import type { InstancePoi } from '../../core/data/world/generators/instanceGenerator';
 import { BeastEntity } from '../entities/BeastEntity';
 import { masksByNeighborType } from '../rendering/autotile';
 import {
   CUBE_HEIGHT,
+  ENTRANCE_ORIGIN_Y,
   TILE_HEIGHT,
   TILE_WIDTH,
+  WATER_DEPTH,
   ensureTransitionTexture,
   isFlatTileType,
   pickGroundTint,
   pickMountainTexture,
   pickMountainTint,
 } from '../rendering/tileTextures';
+import { TREE_ORIGIN_Y, TREE_SHADOW_KEY } from '../rendering/treeTextures';
 
 const CHUNK_SIZE = 16;
 const LOAD_RADIUS = 2;
@@ -30,10 +35,17 @@ export const screenToMap = (screenX: number, screenY: number) => ({
   y: Math.round((screenY / (TILE_HEIGHT / 2) - screenX / (TILE_WIDTH / 2)) / 2),
 });
 
+interface WaterLayer {
+  sprite: Phaser.GameObjects.TileSprite;
+  baseX: number;
+  baseY: number;
+}
+
 interface ChunkData {
   objects: Phaser.GameObjects.GameObject[];
   obstacles: string[];
   waterTiles: string[];
+  waterLayers: WaterLayer[];
   timers: (Phaser.Time.TimerEvent | Phaser.Tweens.Tween)[];
 }
 
@@ -61,8 +73,8 @@ export class ChunkManager {
     return kind === 'montania_alta' || kind === 'montania_media' || kind === 'estribacion';
   }
 
-  /** Tile libre de obstáculos y de montaña: apto para spawn o destino. */
-  public isWalkableTile(x: number, y: number): boolean {
+  /** Tile libre de obstáculos y de montaña: apto para caminar, spawn o destino. */
+  public isTileWalkable(x: number, y: number): boolean {
     return !this.isBlockedTile(x, y) && !this.isMountainTile(x, y);
   }
 
@@ -70,7 +82,7 @@ export class ChunkManager {
   public findNearestWalkableTile(origin: { x: number; y: number }, maxRadius = 24): { x: number; y: number } | null {
     const ox = Math.round(origin.x);
     const oy = Math.round(origin.y);
-    if (this.isWalkableTile(ox, oy)) return { x: ox, y: oy };
+    if (this.isTileWalkable(ox, oy)) return { x: ox, y: oy };
 
     for (let ring = 1; ring <= maxRadius; ring++) {
       for (let dy = -ring; dy <= ring; dy++) {
@@ -78,17 +90,17 @@ export class ChunkManager {
           if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue;
           const x = ox + dx;
           const y = oy + dy;
-          if (this.isWalkableTile(x, y)) return { x, y };
+          if (this.isTileWalkable(x, y)) return { x, y };
         }
       }
     }
     return null;
   }
 
-  public update(playerScreenX: number, playerScreenY: number): void {
-    const mapCoords = screenToMap(playerScreenX, playerScreenY - CUBE_HEIGHT);
-    const currentChunkX = Math.floor(mapCoords.x / CHUNK_SIZE);
-    const currentChunkY = Math.floor(mapCoords.y / CHUNK_SIZE);
+  /** El jugador entrega su posición cartesiana (tiles), no píxeles de pantalla. */
+  public update(playerMapX: number, playerMapY: number): void {
+    const currentChunkX = Math.floor(playerMapX / CHUNK_SIZE);
+    const currentChunkY = Math.floor(playerMapY / CHUNK_SIZE);
 
     const required = new Set<string>();
     for (let dx = -LOAD_RADIUS; dx <= LOAD_RADIUS; dx++) {
@@ -114,7 +126,10 @@ export class ChunkManager {
     const objects: Phaser.GameObjects.GameObject[] = [];
     const chunkObstacles: string[] = [];
     const chunkWaterTiles: string[] = [];
+    const waterRects: Array<{ x: number; y: number }> = [];
+    const waterLayers: WaterLayer[] = [];
     const timers: (Phaser.Time.TimerEvent | Phaser.Tweens.Tween)[] = [];
+    const instancePoi = getInstanceInChunk(chunkX, chunkY);
 
     // ---- 1. Terreno ----
     const tiles = generateChunkTerrain(this.province.id, this.province.biome, chunkX, chunkY, CHUNK_SIZE);
@@ -155,19 +170,24 @@ export class ChunkManager {
       const transitionMasks = masksByNeighborType(tile.type, neighbors);
 
       if (tile.type === 'agua') {
-        // Agua profunda: conserva el cubo y su volumen.
-        const img = this.scene.add.image(pos.x, pos.y + CUBE_HEIGHT, 'tile_agua');
-        img.setOrigin(0.5, 0);
-        img.setDepth(pos.y);
-        objects.push(img);
+        // La lámina de agua es un TileSprite por chunk (ver más abajo): aquí
+        // solo se registra el hueco del rombo y su matiz de calado.
+        const surfaceY = pos.y + CUBE_HEIGHT;
+        waterRects.push({ x: pos.x, y: surfaceY });
 
         const tileKey = `${tile.x},${tile.y}`;
         this.waterTiles.add(tileKey);
         chunkWaterTiles.push(tileKey);
 
-        if (tile.waterDepth === 1) img.setTint(0x1e3a8a);
-        // ríos navegables vs canal somero: leve matiz distinto
-        else if (tile.navigable && tile.geoId === 'grand_canal') img.setTint(0x38bdf8);
+        const shadeKey = tile.waterDepth === 1
+          ? 'water_shade_deep'
+          : tile.navigable && tile.geoId === 'grand_canal' ? 'water_shade_canal' : null;
+        if (shadeKey) {
+          const shade = this.scene.add.image(pos.x, surfaceY, shadeKey);
+          shade.setOrigin(0.5, 0);
+          shade.setDepth(pos.y);
+          objects.push(shade);
+        }
 
         // Espuma en las orillas: todos los tipos de tierra comparten el mismo
         // color de espuma, así que se agrupan en una sola máscara.
@@ -180,18 +200,6 @@ export class ChunkManager {
           foam.setDepth(pos.y + 0.1);
           objects.push(foam);
         }
-
-        const rng = mulberry32(stringToHash(`water_${tile.x}_${tile.y}`));
-        const tween = this.scene.tweens.add({
-          targets: img,
-          alpha: { from: 0.85, to: 1 },
-          duration: 2000 + rng() * 1000,
-          yoyo: true,
-          repeat: -1,
-          ease: 'Sine.easeInOut',
-          delay: rng() * 2000,
-        });
-        timers.push(tween);
         return;
       }
 
@@ -223,6 +231,16 @@ export class ChunkManager {
         objects.push(edge);
       }
 
+      // Entrada de instancia: portal visual elevado sobre el tile. Se salta
+      // árboles y decals para que la boca quede siempre legible.
+      if (instancePoi && instancePoi.x === tile.x && instancePoi.y === tile.y) {
+        this.spawnInstanceEntrance(instancePoi, pos, objects, timers);
+        const tileKey = `${tile.x},${tile.y}`;
+        chunkObstacles.push(tileKey);
+        localObstacles.add(tileKey);
+        return;
+      }
+
       this.maybePlaceDecal(tile.type, pos, detailRng, objects);
 
       if (tile.type === 'pantano') {
@@ -230,8 +248,9 @@ export class ChunkManager {
         const rng = mulberry32(stringToHash(`sw_${chunkX}_${chunkY}_${tile.x}_${tile.y}`));
         if (rng() < 0.25) {
           const reed = this.scene.add.image(pos.x, pos.y + CUBE_HEIGHT, 'tree_dead');
+          reed.setOrigin(0.5, TREE_ORIGIN_Y);
           reed.setScale(0.35);
-          reed.setAlpha(0.7);
+          reed.setAlpha(0.6);
           reed.setDepth(pos.y + 1);
           objects.push(reed);
         }
@@ -243,24 +262,34 @@ export class ChunkManager {
 
         // Menos árboles que antes: el suelo y los decals deben leerse.
         if (rng() < tile.density * 0.7) {
-          let treeKey = 'tree_round';
-          if (tile.isNearWater || tile.type === 'arena') treeKey = rng() > 0.3 ? 'tree_palm' : 'tree_dead';
-          else if (tile.type === 'nieve') treeKey = rng() > 0.4 ? 'tree_pine' : 'tree_dead';
-          else {
-            const r = rng();
-            if (r > 0.85) treeKey = 'tree_dead';
-            else if (r > 0.4) treeKey = 'tree_pine';
-          }
+          const treeKey = this.pickTreeKey(tile, rng);
+          // Altura y copa variables por árbol: rompe la retícula de la rejilla.
+          const scaleX = 1.2 + rng() * 0.6;
+          const scaleY = 1.2 + rng() * 0.6;
+
+          // Sombra de anclaje al suelo (elipse suave, luz del suroeste).
+          const shadow = this.scene.add.image(
+            pos.x + 4 * scaleX,
+            pos.y + CUBE_HEIGHT + 4,
+            TREE_SHADOW_KEY,
+          );
+          shadow.setScale(scaleX, scaleY * 0.9);
+          shadow.setDepth(pos.y + 0.4);
+          objects.push(shadow);
 
           const tree = this.treeGroup.create(pos.x, pos.y + CUBE_HEIGHT, treeKey) as Phaser.Physics.Arcade.Sprite;
-          tree.setOrigin(0.5, 0.9);
-          tree.setScale((0.90 + rng() * 0.3) * 2);
+          tree.setOrigin(0.5, TREE_ORIGIN_Y);
+          tree.setScale(scaleX, scaleY);
           tree.setFlipX(rng() > 0.5);
           tree.setDepth(pos.y + 1);
 
-          if (tree.body) {
-            tree.body.setSize(20, 20);
-            tree.body.setOffset(22, 40);
+          const body = tree.body as Phaser.Physics.Arcade.StaticBody | null;
+          if (body) {
+            // El offset del StaticBody va en píxeles de mundo: tras escalar,
+            // se ancla la huella de colisión a la base del tronco.
+            body.updateFromGameObject();
+            body.setSize(28, 16, false);
+            body.setOffset(48 * scaleX - 14, 118 * scaleY - 16);
           }
 
           objects.push(tree);
@@ -270,6 +299,33 @@ export class ChunkManager {
         }
       }
     });
+
+    // ---- 1b. Lámina de agua continua del chunk ----
+    // Un único TileSprite bajo todo el terreno: el suelo es opaco y tesela sin
+    // costuras, así que el agua solo asoma por los rombos de agua. El patrón
+    // se ancla a coordenadas de mundo para que los chunks vecinos encajen.
+    if (waterRects.length > 0) {
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      for (const r of waterRects) {
+        if (r.x < minX) minX = r.x;
+        if (r.x > maxX) maxX = r.x;
+        if (r.y < minY) minY = r.y;
+        if (r.y > maxY) maxY = r.y;
+      }
+      const left = Math.floor(minX - TILE_WIDTH / 2 - 4);
+      const top = Math.floor(minY - 4);
+      const width = Math.ceil(maxX + TILE_WIDTH / 2 + 4) - left;
+      const height = Math.ceil(maxY + TILE_HEIGHT + 4) - top;
+      const layer = this.scene.add.tileSprite(left, top, width, height, 'water_flow');
+      layer.setOrigin(0, 0);
+      layer.setDepth(WATER_DEPTH);
+      layer.setTilePosition(left, top);
+      objects.push(layer);
+      waterLayers.push({ sprite: layer, baseX: left, baseY: top });
+    }
 
     // ---- 2. Fauna ----
     const chunkFauna = generateChunkFauna(this.province.id, chunkX, chunkY, CHUNK_SIZE);
@@ -341,7 +397,89 @@ export class ChunkManager {
     });
 
     chunkObstacles.forEach((o) => this.obstacles.add(o));
-    this.loadedChunks.set(key, { objects, obstacles: chunkObstacles, waterTiles: chunkWaterTiles, timers });
+    this.loadedChunks.set(key, {
+      objects,
+      obstacles: chunkObstacles,
+      waterTiles: chunkWaterTiles,
+      waterLayers,
+      timers,
+    });
+  }
+
+  /** Especie de árbol según bioma y humedad. Consume el rng del tile para
+   *  mantener la elección determinista respecto a la escala y el volteo. */
+  private pickTreeKey(tile: { type: TileType; isNearWater: boolean }, rng: () => number): string {
+    if (tile.isNearWater || tile.type === 'arena') {
+      const r = rng();
+      if (r < 0.5) return 'tree_palm';
+      if (r < 0.72) return 'tree_willow';
+      if (r < 0.9) return 'tree_dead';
+      return 'tree_round';
+    }
+    if (tile.type === 'nieve') {
+      const r = rng();
+      return r < 0.62 ? 'tree_pine' : r < 0.9 ? 'tree_dead' : 'tree_round';
+    }
+    const r = rng();
+    if (r < 0.3) return 'tree_round';
+    if (r < 0.55) return 'tree_pine';
+    if (r < 0.7) return 'tree_willow';
+    if (r < 0.82) return 'tree_sakura';
+    if (r < 0.94) return 'tree_dead';
+    return 'tree_round';
+  }
+
+  /** Portal de instancia: sombra, halo aditivo palpitante y entrada elevada. */
+  private spawnInstanceEntrance(
+    poi: InstancePoi,
+    pos: { x: number; y: number },
+    objects: Phaser.GameObjects.GameObject[],
+    timers: (Phaser.Time.TimerEvent | Phaser.Tweens.Tween)[],
+  ): void {
+    const baseY = pos.y + CUBE_HEIGHT;
+
+    const shadow = this.scene.add.image(pos.x, baseY + 6, TREE_SHADOW_KEY);
+    shadow.setScale(1.9, 1.5);
+    shadow.setDepth(pos.y + 0.4);
+    objects.push(shadow);
+
+    const glow = this.scene.add.image(pos.x, baseY - 20, 'poi_glow');
+    glow.setBlendMode(Phaser.BlendModes.ADD);
+    glow.setTint(INSTANCE_COLOR[poi.kind]);
+    glow.setAlpha(0.3);
+    glow.setScale(0.95);
+    glow.setDepth(pos.y + 9);
+    objects.push(glow);
+    timers.push(this.scene.tweens.add({
+      targets: glow,
+      alpha: { from: 0.2, to: 0.48 },
+      scaleX: { from: 0.9, to: 1.3 },
+      scaleY: { from: 0.9, to: 1.3 },
+      duration: 1800,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
+    }));
+
+    const entrance = this.scene.add.image(pos.x, baseY + 2, `entrance_${poi.kind}`);
+    entrance.setOrigin(0.5, ENTRANCE_ORIGIN_Y);
+    entrance.setScale(1.12);
+    entrance.setDepth(pos.y + 10);
+    objects.push(entrance);
+  }
+
+  /** Corriente del agua: desplaza el patrón de cada lámina. El período de la
+   *  textura es 128 px, así que el offset se envuelve para no degradar la
+   *  precisión flotante en sesiones largas. */
+  public animateWater(timeMs: number): void {
+    const flow = (timeMs * 0.02) % 128;
+    const swell = Math.sin(timeMs * 0.0005) * 3;
+    for (const chunk of this.loadedChunks.values()) {
+      for (const layer of chunk.waterLayers) {
+        layer.sprite.tilePositionX = layer.baseX + flow;
+        layer.sprite.tilePositionY = layer.baseY + swell;
+      }
+    }
   }
 
   /** Detalles planos (piedras, matas, flores, grietas) sobre suelo caminable. */
