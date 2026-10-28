@@ -56,12 +56,8 @@ interface PathNode extends Point {
 }
 
 const SQRT2 = Math.SQRT2;
-const MAX_ITERATIONS = 6000; // Guarda contra búsquedas infinitas
+const MAX_ITERATIONS = 10000; // Aumentado por si el mapa es muy complejo
 
-/**
- * A* de 8 direcciones con heurística Octile (admisible para diagonales)
- * y prevención de "corner-cutting" entre celdas ortogonales bloqueadas.
- */
 export function findPath(
   startX: number,
   startY: number,
@@ -79,7 +75,6 @@ export function findPath(
   const getHeuristic = (x: number, y: number): number => {
     const dx = Math.abs(x - targetX);
     const dy = Math.abs(y - targetY);
-    // Octile: D*(dx+dy) + (D2 - 2D)*min(dx,dy), con D=1, D2=SQRT2
     return dx + dy + (SQRT2 - 2) * Math.min(dx, dy);
   };
 
@@ -120,15 +115,9 @@ export function findPath(
       if (closedSet.has(nKey)) continue;
       if (isBlocked(nx, ny)) continue;
 
-      // Anti corner-cutting: no permitir diagonal si alguna ortogonal vecina está bloqueada
-      const isDiagonal = dir.dx !== 0 && dir.dy !== 0;
-      if (isDiagonal) {
-        if (isBlocked(current.x + dir.dx, current.y) || isBlocked(current.x, current.y + dir.dy)) {
-          continue;
-        }
-      }
-
-      const stepCost = isDiagonal ? SQRT2 : 1;
+      // Eliminamos el bloqueo de esquinas (anti corner-cutting) para que sea más fácil moverse.
+      
+      const stepCost = (dir.dx !== 0 && dir.dy !== 0) ? SQRT2 : 1;
       const g = current.g + stepCost;
       const h = getHeuristic(nx, ny);
       const f = g + h;

@@ -20,6 +20,7 @@ import type {
   CommandResult,
   RecentEvent,
 } from '../../types/admin.types';
+import { MinimapPoiKind } from '../data/world/geoPois';
 
 // Unificamos la base a /api/admin
 const BASE = '/api/admin';
@@ -101,7 +102,7 @@ export const adminService = {
   // Mundo y POIs
   getWorldSeed: () => request<WorldSeedInfo>('/world/seed'),
   getPois: () => request<PoiRow[]>('/world/pois'),
-  syncPois: () =>
+  syncPois: (pois: { id: string; name: string; kind: MinimapPoiKind; x: number; y: number; }[]) =>
     request<{ synced: number }>('/world/pois/sync', {
       method: 'POST',
     }),

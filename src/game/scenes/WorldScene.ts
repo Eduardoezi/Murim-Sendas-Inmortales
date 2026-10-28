@@ -5,12 +5,8 @@ import { findPath } from '../utils/pathfinding';
 import { Province } from '../../core/data/world/types';
 import { ChunkManager, screenToMap } from '../managers/ChunkManager';
 import { PlayerEntity } from '../entities/PlayerEntity';
-import { BeastEntity } from '../entities/BeastEntity';
 import { MinimapSystem } from '../systems/MinimapSystem';
-import { stepGeoBudget, getBiomeCached } from '../../core/data/world/generators/geoTileCache';
-import { nearestOutpost, distanceToOutpost, WorldOutpost, getOutposts, ARRIVAL_RADIUS } from '../../core/data/world/worldRegistry';
-import { EventBus } from '../events/EventBus';
-import { usePlayerStore } from '../../core/store/usePlayerStore';
+import { stepGeoBudget } from '../../core/data/world/generators/geoTileCache';
 
 const TILE_WIDTH = 64;
 const TILE_HEIGHT = 32;
@@ -27,23 +23,8 @@ export class WorldScene extends Phaser.Scene {
   private treeGroup!: Phaser.Physics.Arcade.StaticGroup;
   private faunaGroup!: Phaser.Physics.Arcade.Group;
   private province!: Province;
-  private vignette!: Phaser.GameObjects.Image;
-  
-  // ── Capa UI (HUD del juego) ───────────────────────────────────────────────
-  // En isométrico, depth = pos.y + N y crece sin límite. Solución:
-  // una capa propia con Number.MAX_SAFE_INTEGER.
-  public uiLayer!: Phaser.GameObjects.Layer;
-
-  // ── Minimapa ──────────────────────────────────────────────────────────────
   private minimap!: MinimapSystem;
   private worldOrigin = { x: 0, y: 0 };
-  private currentWaypoint: { x: number; y: number } | null = null;
-  
-  private outpostsLayer!: Phaser.GameObjects.Container;
-  private renderedOutposts = new Map<string, Phaser.GameObjects.GameObject[]>();
-  private lastPlayerTile = { x: 0, y: 0 };
-  private lastPosSave = 0;
-  private arrivedCooldowns = new Set<string>();
 
   constructor() {
     super({ key: 'WorldScene' });
@@ -132,54 +113,6 @@ export class WorldScene extends Phaser.Scene {
     gDead.generateTexture('tree_dead', 64, 64);
   }
 
-  private createBeastTextures() {
-    const gSnake = this.make.graphics({ x: 0, y: 0 }, false);
-    gSnake.fillStyle(0x22c55e, 1); gSnake.fillCircle(16, 16, 8);
-    gSnake.generateTexture('beast_snake', 32, 32);
-
-    const gSplash = this.make.graphics({ x: 0, y: 0 }, false);
-    gSplash.lineStyle(2, 0xffffff, 1);
-    gSplash.strokeCircle(10, 10, 5);
-    gSplash.generateTexture('splash_ring', 20, 20);
-  }
-
-  private createPoiTextures() {
-    const mk = (key: string, flag: number) => {
-      const g = this.make.graphics({ x: 0, y: 0 }, false);
-      g.fillStyle(0x5c4033, 1); g.fillRect(14, 8, 4, 40);
-      g.fillStyle(flag, 1);
-      g.beginPath(); g.moveTo(18, 8); g.lineTo(44, 14); g.lineTo(18, 24); g.closePath(); g.fillPath();
-      g.fillStyle(0xfbbf24, 1); g.fillCircle(16, 6, 3);
-      g.generateTexture(key, 48, 52);
-      g.destroy();
-    };
-    mk('poi_flag_capital', 0xd97706);
-    mk('poi_flag_sect', 0x0ea5e9);
-    mk('poi_flag_landmark', 0xa855f7);
-  }
-
-  private createVignette() {
-    const width = this.scale.width;
-    const height = this.scale.height;
-    const vignetteTexture = this.textures.createCanvas('vignette', width, height);
-    if (!vignetteTexture) return;
-    
-    const ctx = vignetteTexture.getContext();
-    const gradient = ctx.createRadialGradient(width / 2, height / 2, Math.min(width, height) * 0.4, width / 2, height / 2, Math.max(width, height) * 0.8);
-    gradient.addColorStop(0, 'rgba(5, 7, 12, 0)');
-    gradient.addColorStop(0.6, 'rgba(5, 7, 12, 0.7)');
-    gradient.addColorStop(1, 'rgba(5, 7, 12, 1)');
-    
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, width, height);
-    vignetteTexture.refresh();
-    
-    this.vignette = this.add.image(width / 2, height / 2, 'vignette');
-    this.vignette.setScrollFactor(0);
-    // OJO: este valor por sí solo NO garantiza nada. La protección real es la uiLayer.
-    this.vignette.setDepth(10000);
-  }
-
   preload() {
     this.createTileTexture('tile_hierba', 0x4ade80, 0x22c55e);
     this.createTileTexture('tile_agua', 0x3b82f6, 0x2563eb);
@@ -188,18 +121,9 @@ export class WorldScene extends Phaser.Scene {
     this.createMountainTexture();
     this.createSwampTexture();
     this.createTrees();
-    this.createBeastTextures();
-    this.createPoiTextures();
   }
 
   create() {
-    // ── Capa UI dedicada (creada ANTES que cualquier objeto de HUD) ────────
-    this.uiLayer = this.add.layer();
-    this.uiLayer.setDepth(Number.MAX_SAFE_INTEGER);
-
-    this.createVignette();
-    this.uiLayer.add(this.vignette); // FIX: la niebla ahora es inmune al depth del mundo
-
     this.cameras.main.setBackgroundColor('#0f172a');
 
     const shaanxi = INITIAL_PROVINCES.find(p => p.id === 'prov_shaanxi') as Province || INITIAL_PROVINCES[0];
@@ -207,16 +131,6 @@ export class WorldScene extends Phaser.Scene {
     const changan = (shaanxi as any).coords ?? { x: 580, y: 334 };
 
     let absSpawn = { x: changan.x + 8, y: changan.y + 8 };
-    try {
-      const savedAbs = localStorage.getItem('murim_world_pos');
-      if (savedAbs) {
-        const parsed = JSON.parse(savedAbs);
-        if (typeof parsed.x === 'number' && typeof parsed.y === 'number') {
-          absSpawn = { x: Math.round(parsed.x), y: Math.round(parsed.y) };
-        }
-      }
-    } catch (e) {}
-
     this.worldOrigin = { x: absSpawn.x - 8, y: absSpawn.y - 8 };
 
     this.treeGroup = this.physics.add.staticGroup();
@@ -230,7 +144,6 @@ export class WorldScene extends Phaser.Scene {
     
     this.player = new PlayerEntity(this, startPos.x, startPos.y + CUBE_HEIGHT);
     this.chunkManager = new ChunkManager(this, this.province, this.treeGroup, this.faunaGroup);
-    this.outpostsLayer = this.add.container(0, 0);
 
     this.physics.add.collider(this.player.sprite, this.treeGroup);
     this.physics.add.collider(this.faunaGroup, this.treeGroup); 
@@ -241,10 +154,7 @@ export class WorldScene extends Phaser.Scene {
     const moveToTile = (tile: { x: number; y: number }) => {
       if (this.player.isMoving) return;
       const localTarget = { x: tile.x - this.worldOrigin.x, y: tile.y - this.worldOrigin.y };
-      const tileKey = `${localTarget.x},${localTarget.y}`;
-
-      if (this.chunkManager.waterTiles.has(tileKey) || this.chunkManager.obstacles.has(tileKey)) return;
-
+      
       const startMapCoords = screenToMap(this.player.sprite.x, this.player.sprite.y - CUBE_HEIGHT);
       const path = findPath(
         startMapCoords.x, startMapCoords.y, localTarget.x, localTarget.y,
@@ -252,28 +162,32 @@ export class WorldScene extends Phaser.Scene {
       );
 
       if (path.length > 0) {
-        this.currentWaypoint = { ...tile };
         this.player.walkPath(this, path, mapToScreen, () => {
-          this.currentWaypoint = null;
-          localStorage.setItem('murim_player_pos', JSON.stringify(localTarget));
           this.chunkManager.update(this.player.sprite.x, this.player.sprite.y);
-          this.checkArrival();
+        });
+      } else {
+        // Fallback si está atascado
+        const directPath = [{ x: startMapCoords.x, y: startMapCoords.y }, localTarget];
+        this.player.walkPath(this, directPath, mapToScreen, () => {
+          this.chunkManager.update(this.player.sprite.x, this.player.sprite.y);
         });
       }
     };
 
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      if (this.minimap && this.minimap.isPointerOver(pointer.x, pointer.y)) return;
-      if (this.input.hitTestPointer(pointer).some((go: any) => go !== this.player.sprite && go instanceof Phaser.GameObjects.Image && String(go.texture.key).startsWith('poi_flag_'))) return;
+      if (this.minimap && this.minimap.isPointerOver(pointer.x, pointer.y)) return; // Evitar mover si clicas el minimapa
       if (this.player.isMoving) return;
       const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
       const local = screenToMap(worldPoint.x, worldPoint.y);
       moveToTile({ x: local.x + this.worldOrigin.x, y: local.y + this.worldOrigin.y });
     });
 
-    // Se pasa la escena (que ya tiene uiLayer) al MinimapSystem
+    // 🔥 INICIALIZACIÓN DEL MINIMAPA SEGURA
     this.minimap = new MinimapSystem(this, {
-      getPlayerTile: () => this.getPlayerAbsTile(),
+      getPlayerTile: () => {
+        const m = screenToMap(this.player.sprite.x, this.player.sprite.y - CUBE_HEIGHT);
+        return { x: m.x + this.worldOrigin.x, y: m.y + this.worldOrigin.y };
+      },
       getEnemies: () => {
         const out: Array<{ x: number; y: number }> = [];
         this.faunaGroup.getChildren().forEach((child) => {
@@ -285,45 +199,16 @@ export class WorldScene extends Phaser.Scene {
         });
         return out;
       },
-      getWaypoint: () => this.currentWaypoint,
+      getWaypoint: () => null, // De momento no tenemos sistema de waypoints visual
       onMapClick: (tx, ty) => moveToTile({ x: tx, y: ty }),
     });
     this.scale.on('resize', () => this.minimap?.handleResize());
-
-    const onPause = () => { 
-      this.physics.pause(); 
-      this.scene.pause(); 
-    };
-    const onResume = () => { 
-      this.physics.resume(); 
-      this.scene.resume(); 
-    };
-
-    const onDangerSignal = (pos: { x: number; y: number }) => {
-      if (!this.player || !this.physics) return;
-      const rel = { x: pos.x - this.worldOrigin.x, y: pos.y - this.worldOrigin.y };
-      const angle = Math.random() * Math.PI * 2;
-      const sx = rel.x + Math.cos(angle) * 6;
-      const sy = rel.y + Math.sin(angle) * 6;
-      const spr = this.faunaGroup.create(0, 0, 'tile_hierba') as Phaser.Physics.Arcade.Sprite;
-      spr.setVisible(false);
-      const entity = new BeastEntity(this, spr, `raid_${Date.now()}`, sx, sy);
-      spr.setData('entity', entity);
-    };
-    EventBus.on('game:player-moved', onDangerSignal);
-
-    this.events.once('shutdown', () => {
-      EventBus.off('game:pause', onPause);
-      EventBus.off('game:resume', onResume);
-      EventBus.off('game:player-moved', onDangerSignal);
-    });
 
     this.input.on('wheel', (pointer: Phaser.Input.Pointer, gameObjects: any, deltaX: number, deltaY: number, deltaZ: number) => {
       const zoomSpeed = 0.001;
       let newZoom = this.cameras.main.zoom - (deltaY * zoomSpeed);
       newZoom = Phaser.Math.Clamp(newZoom, 0.8, 3.5);
       this.cameras.main.setZoom(newZoom);
-      this.vignette.setScale(1 / newZoom);
     });
   }
 
@@ -332,118 +217,5 @@ export class WorldScene extends Phaser.Scene {
     if (this.minimap) this.minimap.update();
     this.player.update(time);
     this.chunkManager.update(this.player.sprite.x, this.player.sprite.y);
-    this.lastPlayerTile = this.getPlayerAbsTile();
-    this.syncOutpostsView();
-
-    if (time - this.lastPosSave > 10_000) {
-      this.lastPosSave = time;
-      void usePlayerStore.getState().saveProgressToServer(this.lastPlayerTile);
-    }
-
-    const playerX = this.player.sprite.x;
-    const playerY = this.player.sprite.y;
-
-    this.faunaGroup.getChildren().forEach((child) => {
-      const beastSprite = child as Phaser.Physics.Arcade.Sprite;
-      if (!beastSprite.active) return;
-      const beastEntity = beastSprite.getData('entity') as BeastEntity | undefined;
-      if (beastEntity) {
-        beastEntity.update(time, playerX, playerY);
-      }
-    });
-  }
-
-  private getPlayerAbsTile(): { x: number; y: number } {
-    const m = screenToMap(this.player.sprite.x, this.player.sprite.y - CUBE_HEIGHT);
-    return { x: m.x + this.worldOrigin.x, y: m.y + this.worldOrigin.y };
-  }
-
-  private openPoiModal(op: WorldOutpost): void {
-    const playerTile = this.getPlayerAbsTile();
-    EventBus.emit('ui:open-modal', {
-      poi: op,
-      playerPos: playerTile,
-      distanceTiles: distanceToOutpost(playerTile, op.pos),
-    });
-    EventBus.emit('game:pause');
-  }
-
-  private syncOutpostsView(): void {
-    const R = 45;
-    const px = this.lastPlayerTile.x;
-    const py = this.lastPlayerTile.y;
-    const outposts = getOutposts();
-
-    for (const op of outposts) {
-      const dx = op.pos.x - px;
-      const dy = op.pos.y - py;
-      const near = Math.abs(dx) <= R && Math.abs(dy) <= R;
-      const rendered = this.renderedOutposts.has(op.id);
-
-      if (near && !rendered) this.renderOutpost(op);
-      else if (!near && rendered) this.removeOutpost(op.id);
-    }
-
-    this.checkArrival();
-  }
-
-  private renderOutpost(op: WorldOutpost): void {
-    const rel = { x: op.pos.x - this.worldOrigin.x, y: op.pos.y - this.worldOrigin.y };
-    const pos = mapToScreen(rel.x, rel.y);
-    const flagKey =
-      op.kind === 'sect' ? 'poi_flag_sect' :
-      op.kind === 'landmark' ? 'poi_flag_landmark' : 'poi_flag_capital';
-
-    const objs: Phaser.GameObjects.GameObject[] = [];
-
-    const label = this.add.text(pos.x, pos.y - 44, op.name, {
-      fontFamily: 'Cinzel, serif', fontSize: '11px', color: '#fde68a',
-      backgroundColor: 'rgba(12,10,8,0.75)', padding: { x: 4, y: 2 },
-    }).setOrigin(0.5, 1).setDepth(pos.y + 40).setVisible(false);
-    objs.push(label);
-
-    const base = this.add.image(pos.x, pos.y + CUBE_HEIGHT, flagKey);
-    base.setOrigin(0.35, 0.95);
-    base.setDepth(pos.y + 2);
-    base.setInteractive({ useHandCursor: true });
-    base.on('pointerdown', () => this.openPoiModal(op));
-    base.on('pointerover', () => label.setVisible(true));
-    base.on('pointerout', () => label.setVisible(false));
-    objs.push(base);
-
-    const biome = getBiomeCached(op.pos.x, op.pos.y);
-    const haloColor = biome === 'Desierto' ? 0xfcd34d : biome === 'Nieve' ? 0xe2e8f0 : 0xa3e635;
-    const g = this.make.graphics({ x: 0, y: 0 }, false);
-    g.fillStyle(haloColor, 0.22);
-    g.fillCircle(16, 8, 16);
-    g.generateTexture(`halo_${op.id}`, 32, 16);
-    g.destroy();
-    const halo = this.add.image(pos.x, pos.y + CUBE_HEIGHT, `halo_${op.id}`);
-    halo.setDepth(pos.y + 1);
-    objs.push(halo);
-
-    this.outpostsLayer.add(objs);
-    this.renderedOutposts.set(op.id, objs);
-  }
-
-  private removeOutpost(id: string): void {
-    const objs = this.renderedOutposts.get(id);
-    if (!objs) return;
-    objs.forEach((o) => o.destroy());
-    if (this.textures.exists(`halo_${id}`)) this.textures.remove(`halo_${id}`);
-    this.renderedOutposts.delete(id);
-  }
-
-  private checkArrival(): void {
-    if (!this.player || !this.minimap) return;
-    const arrived = nearestOutpost(this.lastPlayerTile.x, this.lastPlayerTile.y);
-    if (!arrived) return;
-    if (this.arrivedCooldowns.has(arrived.id)) return;
-    this.arrivedCooldowns.add(arrived.id);
-    this.time.delayedCall(100, () => {
-      const far = nearestOutpost(this.lastPlayerTile.x, this.lastPlayerTile.y, ARRIVAL_RADIUS * 2);
-      if (!far || far.id !== arrived.id) this.arrivedCooldowns.delete(arrived.id);
-    });
-    this.openPoiModal(arrived);
   }
 }

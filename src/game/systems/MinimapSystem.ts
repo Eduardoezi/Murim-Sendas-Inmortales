@@ -1,6 +1,6 @@
 // src/game/systems/MinimapSystem.ts
 import Phaser from 'phaser';
-import { MinimapConfig, MINIMAP_DEFAULTS } from '../config/minimapConfig';
+import { MINIMAP_DEFAULTS, MinimapConfig } from '../config/minimapConfig';
 import { isImpassableGeo } from '../../core/data/world/generators/geoSampler';
 import { getBiomeCached, preloadGeoRowsAsync, preloadGeoWindow, sampleGeoCached } from '../../core/data/world/generators/geoTileCache';
 import { GeoPoi, getWorldPois } from '../../core/data/world/geoPois';
@@ -16,7 +16,6 @@ export interface MinimapOptions {
 }
 
 interface EnemyBlip { x: number; y: number }
-
 const GRID = WORLD_SEED.gridSize;
 
 export class MinimapSystem {
@@ -29,12 +28,6 @@ export class MinimapSystem {
   private icons!: Phaser.GameObjects.Graphics;
   private frameGfx!: Phaser.GameObjects.Graphics;
   private label!: Phaser.GameObjects.Text;
-  
-  private maskImage!: Phaser.GameObjects.Image;
-  
-  // Capa UI exclusiva del HUD
-  private uiLayer!: Phaser.GameObjects.Layer;
-  private uiOwnsLayer = false;
 
   private worldCanvas: HTMLCanvasElement | null = null;
   private worldCtx: CanvasRenderingContext2D | null = null;
@@ -63,6 +56,7 @@ export class MinimapSystem {
     this.bindInput();
     this.relayout();
     
+    // Forzar relayout por si el canvas de React tarda en montarse
     this.scene.time.delayedCall(100, () => this.relayout());
   }
 
@@ -93,7 +87,6 @@ export class MinimapSystem {
     this.scanTimer?.remove();
     if (this.wheelHandler) this.scene.input.off('wheel', this.wheelHandler);
     this.container.destroy();
-    if (this.uiOwnsLayer) this.uiLayer?.destroy();
   }
 
   private buildUI(): void {
@@ -121,35 +114,11 @@ export class MinimapSystem {
       fontFamily: 'monospace', fontSize: '10px', color: '#e2e8f0', backgroundColor: '#0b1120cc', padding: { x: 4, y: 1 },
     }).setOrigin(0.5, 0).setVisible(false);
 
-    // Usamos BitmapMask para evitar el bug de recorte de WebGL
-    if (!this.scene.textures.exists('__minimap_mask_tex')) {
-      const maskG = this.scene.make.graphics({ x: 0, y: 0 }, false);
-      maskG.fillStyle(0xffffff, 1);
-      maskG.fillCircle(sizePx / 2, sizePx / 2, sizePx / 2 - 1);
-      maskG.generateTexture('__minimap_mask_tex', sizePx, sizePx);
-      maskG.destroy();
-    }
-
-    this.maskImage = this.scene.make.image({ x: 0, y: 0, key: '__minimap_mask_tex', add: false });
-    const bitmapMask = new Phaser.Display.Masks.BitmapMask(this.scene, this.maskImage);
-    
-    this.terrainCanvas.setMask(bitmapMask);
-    this.icons.setMask(bitmapMask);
-
     this.container = this.scene.add.container(0, 0, [this.terrainCanvas, this.icons, this.frameGfx, this.label]);
-    this.container.setScrollFactor(0).setDepth(10001); 
-    this.container.setSize(sizePx, sizePx);
-
-    // ── FIX Z-ORDER (capas del mundo) ──────────────────────────────────────
-    const sceneWithLayer = this.scene as unknown as { uiLayer?: Phaser.GameObjects.Layer };
-    if (!this.uiLayer) {
-      this.uiLayer = sceneWithLayer.uiLayer ?? this.scene.add.layer();
-      if (!sceneWithLayer.uiLayer) this.uiLayer.setDepth(Number.MAX_SAFE_INTEGER);
-    }
-    this.uiLayer.add(this.container);
     
-    this.uiOwnsLayer = !sceneWithLayer.uiLayer;
-
+    // Depth seguro para estar por encima de los árboles, pero sin romper WebGL
+    this.container.setScrollFactor(0).setDepth(50000); 
+    this.container.setSize(sizePx, sizePx);
     this.updateHitArea();
 
     this.container.on('pointermove', (ptr: Phaser.Input.Pointer) => {
@@ -195,11 +164,11 @@ export class MinimapSystem {
     this.radiusPx = this.cfg.shape === 'circle' ? half - 2 : half - 1;
     this.scale = this.radiusPx / this.cfg.viewRadiusTiles;
 
+    // Posición en la esquina inferior derecha
     this.container.setPosition(
       this.scene.scale.width - sizePx - marginPx, 
       this.scene.scale.height - sizePx - marginPx
     );
-    this.maskImage.setPosition(this.container.x, this.container.y);
 
     if (!this.terrainDirty && this.cropTex) this.blitCrop();
     this.drawFrame();
@@ -255,9 +224,19 @@ export class MinimapSystem {
     }
     const ctx = this.cropCanvas.getContext('2d');
     if (!ctx) return;
+    
     ctx.imageSmoothingEnabled = false;
     ctx.clearRect(0, 0, this.cfg.sizePx, this.cfg.sizePx);
+
+    // 🔥 LA MAGIA: Recortar el círculo en el Canvas 2D nativo (Cero uso de WebGL Masks)
+    ctx.save();
+    if (this.cfg.shape === 'circle') {
+      ctx.beginPath();
+      ctx.arc(this.cfg.sizePx / 2, this.cfg.sizePx / 2, this.cfg.sizePx / 2, 0, Math.PI * 2);
+      ctx.clip();
+    }
     ctx.drawImage(this.worldCanvas, rx, ry, w, w, 0, 0, this.cfg.sizePx, this.cfg.sizePx);
+    ctx.restore();
 
     if (!this.cropTex) {
       const key = '__minimap_view';
@@ -279,7 +258,10 @@ export class MinimapSystem {
     const playerRow = Math.floor(this.opts.getPlayerTile().y);
     const pp = this.opts.getPlayerTile();
     preloadGeoWindow(pp.x, pp.y, 96);
-    const ROWS_PER_SLICE = 20;
+    
+    // Pintar de a pocas filas para no congelar el navegador
+    const ROWS_PER_SLICE = 5; 
+    
     preloadGeoRowsAsync(
       ROWS_PER_SLICE,
       (_y0, _y1) => {

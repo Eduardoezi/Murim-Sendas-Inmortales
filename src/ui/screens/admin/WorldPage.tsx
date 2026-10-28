@@ -103,10 +103,18 @@ export const WorldPage = () => {
     }
   };
 
-  const syncPois = async (): Promise<void> => {
+  const syncPois = async (items: PoiRow[] = []): Promise<void> => {
     setSyncing(true);
     try {
-      const res = await adminService.syncPois();
+      const syncPayload: Parameters<typeof adminService.syncPois>[0] = items.map((item) => ({
+        id: item.id,
+        name: item.name,
+        kind: item.kind as Parameters<typeof adminService.syncPois>[0][number]['kind'],
+        x: item.x,
+        y: item.y,
+      }));
+
+      const res = await adminService.syncPois(syncPayload);
       toast.success(`POIs sincronizados: ${res.synced} registrados en BD`);
       setPois(await adminService.getPois());
     } catch (err) {
