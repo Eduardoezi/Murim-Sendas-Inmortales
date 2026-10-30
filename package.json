@@ -9,7 +9,8 @@
     "dev:server": "tsx watch server/index.ts",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
     "test": "vitest run",
-    "build": "tsc && vite build"
+    "build": "tsc && vite build",
+    "preview": "vite preview"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

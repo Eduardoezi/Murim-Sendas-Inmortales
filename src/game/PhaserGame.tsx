@@ -10,6 +10,9 @@ export const PhaserGame = () => {
     if (!containerRef.current) return;
     
     const game = new Phaser.Game(getGameConfig(containerRef.current));
+    if (import.meta.env.DEV) {
+      (window as unknown as { __murimGame?: Phaser.Game }).__murimGame = game;
+    }
 
     return () => {
       game.destroy(true);
