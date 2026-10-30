@@ -84,34 +84,7 @@ app.get('/api/player/me', (req, res) => {
   });
 });
 
-// ── MIGRACIÓN: columnas de progresión ──────────────────────────────────────
-const ensureProgressColumns = () => {
-  const cols: Array<[string, string]> = [
-    ['hp', 'INTEGER'], ['max_hp', 'INTEGER'], ['qi', 'INTEGER'], ['max_qi', 'INTEGER'],
-    ['spirit_stones', 'INTEGER DEFAULT 250'], ['sect_merits', 'INTEGER DEFAULT 0'],
-    ['cb_actual', 'INTEGER DEFAULT 0'], ['cb_requerido', 'INTEGER DEFAULT 100'],
-    ['x', 'INTEGER'], ['y', 'INTEGER'], ['last_seen', 'INTEGER']
-  ];
-  const existing = db.prepare(`PRAGMA table_info(players)`).all() as any[];
-  const names = new Set(existing.map((c) => c.name));
-  for (const [name, type] of cols) {
-    if (!names.has(name)) db.prepare(`ALTER TABLE players ADD COLUMN ${name} ${type}`).run();
-  }
-};
-ensureProgressColumns();
-
-db.prepare(`
-CREATE TABLE IF NOT EXISTS inventory_items (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  player_id TEXT NOT NULL,
-  item_key TEXT NOT NULL,
-  name TEXT NOT NULL,
-  category TEXT NOT NULL DEFAULT 'misc',
-  quantity INTEGER NOT NULL DEFAULT 1,
-  description TEXT,
-  UNIQUE(player_id, item_key),
-  FOREIGN KEY(player_id) REFERENCES players(id)
-);`).run();
+// ── Esquema e inventario: definidos en server/db/schema.sql + migrate.ts ────
 
 function seedInventoryIfEmpty(playerId: string) {
   const count = (db.prepare('SELECT COUNT(*) AS n FROM inventory_items WHERE player_id = ?').get(playerId) as any).n;
@@ -205,28 +178,9 @@ app.get('/api/player/inventory', (req, res) => {
   res.json({ success: true, items, capacity: 15 });
 });
 
-// ── PORTAL DE ADMINISTRACIÓN: TABLAS BASE ──────────────────────────────────
-db.exec(`
-CREATE TABLE IF NOT EXISTS activity_log (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  player_id TEXT,
-  kind TEXT NOT NULL,
-  message TEXT NOT NULL,
-  level TEXT NOT NULL DEFAULT 'info',
-  ts DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_activity_ts ON activity_log(ts);
-`);
+// ── Tablas del portal admin: en server/db/schema.sql (+ migrate.ts) ─────────
 
-// Semillas y configuración de admin
-const ensureColumn = (table: string, column: string, decl: string): void => {
-  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-  if (!cols.some((c) => c.name === column)) db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`).run();
-};
-ensureColumn('users', 'is_admin', 'INTEGER NOT NULL DEFAULT 0');
-ensureColumn('players', 'banned', 'INTEGER NOT NULL DEFAULT 0');
-ensureColumn('players', 'ban_reason', 'TEXT');
-
+// Semilla del usuario administrador (la columna is_admin la garantiza migrate.ts)
 {
   const existingAdmin = db.prepare('SELECT id, is_admin FROM users WHERE email = ?').get('admin@murim.dev') as { id: number; is_admin: number } | undefined;
   if (!existingAdmin) {

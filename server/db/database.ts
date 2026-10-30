@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { runMigrations } from './migrate';
 
 // ✅ Corregimos __dirname para ES Modules
 const __filename = fileURLToPath(import.meta.url);
@@ -16,5 +17,8 @@ const db = new Database(dbPath);
 const schemaPath = path.resolve(__dirname, './schema.sql');
 const schema = fs.readFileSync(schemaPath, 'utf-8');
 db.exec(schema);
+
+// Columnas históricas para BDs que ya existían antes del esquema canónico.
+runMigrations(db);
 
 export default db;
