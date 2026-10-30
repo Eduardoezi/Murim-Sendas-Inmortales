@@ -1,70 +1,104 @@
 // src/game/systems/MinimapSystem.ts
+// ─────────────────────────────────────────────────────────────────────────────
+// Radar isométrico. Su espacio es la pantalla del mundo dividida por Z (píxeles
+// de mundo por píxel de radar), así que terreno, blips y rectángulo de cámara
+// se ven orientados EXACTAMENTE igual que en pantalla. Vive en HudScene, con
+// cámara propia sin follow ni zoom: por eso el zoom del mundo ya no lo mueve.
+//
+// El terreno viene de MapDiscovery (solo lo explorado). El clic se invierte por
+// la misma proyección iso: px de radar → px de mundo → tesela real del mundo.
+// ─────────────────────────────────────────────────────────────────────────────
 import Phaser from 'phaser';
 import { MINIMAP_DEFAULTS, MinimapConfig } from '../config/minimapConfig';
-import { isImpassableGeo } from '../../core/data/world/generators/geoSampler';
-import { getBiomeCached, preloadGeoRowsAsync, preloadGeoWindow, sampleGeoCached } from '../../core/data/world/generators/geoTileCache';
 import { GeoPoi, getWorldPois } from '../../core/data/world/geoPois';
 import { WORLD_SEED } from '../../core/data/world/seeds/worldSeed';
+import {
+  ISO_HALF_H,
+  ISO_HALF_W,
+  ISO_TILE_STEP_PX,
+  isoPxToTile,
+  isoTileToPx,
+} from '../utils/isoProjection';
+import { MapDiscovery } from './MapDiscovery';
+import { HudDataSource } from './HudDataSource';
+
+const GRID = WORLD_SEED.gridSize;
+const VIEW_KEY = '__minimap_view';
 
 export interface MinimapOptions {
   config?: Partial<MinimapConfig>;
-  getPlayerTile: () => { x: number; y: number };
-  getEnemies: () => Array<{ x: number; y: number }>;
-  getWaypoint?: () => { x: number; y: number } | null;
-  onMapClick?: (tileX: number, tileY: number) => void;
-  poiFilter?: (poi: GeoPoi) => boolean;
+  world: HudDataSource;
+  discovery: MapDiscovery;
+  /** Profundidad dentro de HudScene: el orden del HUD se decide en la escena. */
+  depth?: number;
 }
 
 interface EnemyBlip { x: number; y: number }
-const GRID = WORLD_SEED.gridSize;
 
 export class MinimapSystem {
   private scene: Phaser.Scene;
   private cfg: MinimapConfig;
-  private opts: MinimapOptions;
+  private world: HudDataSource;
+  private discovery: MapDiscovery;
+  private depth?: number;
 
   private container!: Phaser.GameObjects.Container;
   private bgGfx!: Phaser.GameObjects.Graphics;
-  private terrainCanvas!: Phaser.GameObjects.Image;
+  private terrain!: Phaser.GameObjects.Image;
   private icons!: Phaser.GameObjects.Graphics;
   private frameGfx!: Phaser.GameObjects.Graphics;
   private label!: Phaser.GameObjects.Text;
 
-  private worldCanvas: HTMLCanvasElement | null = null;
-  private worldCtx: CanvasRenderingContext2D | null = null;
-  private terrainDirty = true;
-  private terrainLoadStarted = false;
-  private lastPlayerTile = { x: NaN, y: NaN };
+  private viewCanvas: HTMLCanvasElement | null = null;
+  private viewCtx: CanvasRenderingContext2D | null = null;
+  private viewTex: Phaser.Textures.CanvasTexture | null = null;
+  private lodCanvas: HTMLCanvasElement | null = null;
+  private lodCtx: CanvasRenderingContext2D | null = null;
 
   private enemies: EnemyBlip[] = [];
   private pois: GeoPoi[] = [];
 
   private cx = 0; private cy = 0;
   private radiusPx = 0;
-  private scale = 1;
+  /** Píxeles de pantalla del mundo por cada píxel de radar. */
+  private z = 1;
+  /** Píxeles de radar que ocupa un paso de tesela a lo largo de un eje. */
+  private stepPx = 1;
+
+  private blittedCenter = { x: NaN, y: NaN };
+  private lastViewRect = { left: NaN, top: NaN, right: NaN, bottom: NaN };
 
   private scanTimer?: Phaser.Time.TimerEvent;
   private wheelHandler?: (p: Phaser.Input.Pointer, go: any, dx: number, dy: number, dz: number) => void;
+  private keyHandler?: (e: KeyboardEvent) => void;
   private destroyed = false;
 
   constructor(scene: Phaser.Scene, opts: MinimapOptions) {
     this.scene = scene;
-    this.opts = opts;
-    this.cfg = { ...MINIMAP_DEFAULTS, ...(opts.config ?? {}), colors: { ...MINIMAP_DEFAULTS.colors, ...(opts.config?.colors ?? {}) } };
-    this.pois = getWorldPois().filter(opts.poiFilter ?? (() => true));
+    this.world = opts.world;
+    this.discovery = opts.discovery;
+    this.depth = opts.depth;
+    this.cfg = {
+      ...MINIMAP_DEFAULTS,
+      ...(opts.config ?? {}),
+      colors: { ...MINIMAP_DEFAULTS.colors, ...(opts.config?.colors ?? {}) },
+    };
+    this.pois = getWorldPois();
     this.buildUI();
+    this.applyGeometry();
     this.startRadar();
     this.bindInput();
     this.relayout();
-    
-    // Forzar relayout por si el canvas de React tarda en montarse
+
+    // El contenedor de React puede tardar en montarse: reubicar una vez montado.
     this.scene.time.delayedCall(100, () => this.relayout());
+    this.scene.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.destroy());
   }
 
   public update(): void {
     if (this.destroyed) return;
-    const p = this.opts.getPlayerTile();
-    this.refreshTerrainAround(p);
+    const p = this.world.getPlayerTile();
+    if (this.needsBlit(p)) this.blitTerrain(p);
     this.renderIcons(p);
   }
 
@@ -72,68 +106,67 @@ export class MinimapSystem {
     const v = Phaser.Math.Clamp(Math.round(tiles), this.cfg.viewRadiusMinTiles, this.cfg.viewRadiusMaxTiles);
     if (v === this.cfg.viewRadiusTiles) return;
     this.cfg.viewRadiusTiles = v;
-    this.relayout();
-    this.blitCrop();
+    this.applyGeometry();
+    this.blitTerrain(this.world.getPlayerTile());
   }
 
   public getViewRadius(): number { return this.cfg.viewRadiusTiles; }
   public setVisible(v: boolean): void { this.container.setVisible(v); }
+  public toggleVisible(): void { this.container.setVisible(!this.container.visible); }
 
+  /** ¿El puntero (px de pantalla) está sobre el radar? Es el mismo test que la
+   *  hit-area de Phaser: la cámara del HUD no tiene scroll ni zoom, así que no
+   *  pueden desincronizarse como pasaba dentro de la cámara del mundo. */
   public isPointerOver(px: number, py: number): boolean {
-    const lx = px - this.container.x;
-    const ly = py - this.container.y;
-    if (this.cfg.shape === 'diamond') {
-      return Math.abs(lx - this.cfg.sizePx / 2) + Math.abs(ly - this.cfg.sizePx / 2) <= this.cfg.sizePx / 2;
-    }
-    return this.container.getBounds().contains(px, py);
+    return this.insideShape(px - this.container.x, py - this.container.y);
   }
 
+  public handleResize(): void { this.relayout(); }
+
   public destroy(): void {
+    if (this.destroyed) return;
     this.destroyed = true;
     this.scanTimer?.remove();
     if (this.wheelHandler) this.scene.input.off('wheel', this.wheelHandler);
+    if (this.keyHandler) this.scene.input.keyboard?.off('keydown', this.keyHandler);
+    if (this.viewTex && this.scene.textures.exists(this.viewTex.key)) {
+      this.scene.textures.remove(this.viewTex.key);
+    }
     this.container.destroy();
   }
 
+  // ── UI ─────────────────────────────────────────────────────────────────────
+
   private buildUI(): void {
-    const { sizePx, colors } = this.cfg;
+    const { sizePx } = this.cfg;
 
-    this.worldCanvas = document.createElement('canvas');
-    this.worldCanvas.width = GRID.width;
-    this.worldCanvas.height = GRID.height;
-    this.worldCtx = this.worldCanvas.getContext('2d');
+    this.viewCanvas = document.createElement('canvas');
+    this.viewCanvas.width = sizePx;
+    this.viewCanvas.height = sizePx;
+    this.viewCtx = this.viewCanvas.getContext('2d');
 
-    if (!this.scene.textures.exists('__minimap_px')) {
-      const pg = this.scene.make.graphics({ x: 0, y: 0 }, false);
-      pg.fillStyle(0x070908, 1).fillRect(0, 0, 1, 1);
-      pg.generateTexture('__minimap_px', 1, 1);
-      pg.destroy();
-    }
+    if (this.scene.textures.exists(VIEW_KEY)) this.scene.textures.remove(VIEW_KEY);
+    this.viewTex = this.scene.textures.addCanvas(VIEW_KEY, this.viewCanvas) as Phaser.Textures.CanvasTexture;
 
-    this.terrainCanvas = this.scene.add.image(0, 0, '__minimap_px')
-      .setOrigin(0, 0)
-      .setDisplaySize(sizePx, sizePx);
-
+    this.terrain = this.scene.add.image(0, 0, VIEW_KEY).setOrigin(0, 0).setDisplaySize(sizePx, sizePx);
     this.bgGfx = this.scene.add.graphics();
     this.icons = this.scene.add.graphics();
     this.frameGfx = this.scene.add.graphics();
     this.label = this.scene.add.text(0, 0, '', {
-      fontFamily: 'monospace', fontSize: '10px', color: '#ddd8c8', backgroundColor: '#05070bcc', padding: { x: 4, y: 1 },
+      fontFamily: 'monospace', fontSize: '10px', color: '#ddd8c8',
+      backgroundColor: '#05070bcc', padding: { x: 4, y: 1 },
     }).setOrigin(0.5, 0).setVisible(false);
 
-    this.container = this.scene.add.container(0, 0, [this.bgGfx, this.terrainCanvas, this.icons, this.frameGfx, this.label]);
-    
-    // Depth seguro para estar por encima de los árboles, pero sin romper WebGL
-    this.container.setScrollFactor(0).setDepth(50000); 
+    this.container = this.scene.add.container(0, 0, [this.bgGfx, this.terrain, this.icons, this.frameGfx, this.label]);
+    if (this.depth !== undefined) this.container.setDepth(this.depth);
     this.container.setSize(sizePx, sizePx);
     this.updateHitArea();
 
     this.container.on('pointermove', (ptr: Phaser.Input.Pointer) => {
-      const local = new Phaser.Geom.Point(ptr.x - this.container.x, ptr.y - this.container.y);
-      const near = this.nearestPoiToLocal(local.x, local.y, 10);
-      if (near) {
-        this.label.setText(near.name).setPosition(local.x, local.y + 12).setVisible(true);
-      } else this.label.setVisible(false);
+      const local = { x: ptr.x - this.container.x, y: ptr.y - this.container.y };
+      const near = this.nearestPoiToLocal(local.x, local.y);
+      if (near) this.label.setText(near.name).setPosition(local.x, local.y + 12).setVisible(true);
+      else this.label.setVisible(false);
     });
     this.container.on('pointerout', () => this.label.setVisible(false));
   }
@@ -145,10 +178,8 @@ export class MinimapSystem {
     } else if (this.cfg.shape === 'diamond') {
       this.container.setInteractive(
         new Phaser.Geom.Polygon([
-          new Phaser.Geom.Point(s / 2, 0),
-          new Phaser.Geom.Point(s, s / 2),
-          new Phaser.Geom.Point(s / 2, s),
-          new Phaser.Geom.Point(0, s / 2),
+          new Phaser.Geom.Point(s / 2, 0), new Phaser.Geom.Point(s, s / 2),
+          new Phaser.Geom.Point(s / 2, s), new Phaser.Geom.Point(0, s / 2),
         ]),
         Phaser.Geom.Polygon.Contains,
       );
@@ -157,125 +188,207 @@ export class MinimapSystem {
     }
   }
 
-  private drawFrame(): void {
-    const { sizePx, colors, shape } = this.cfg;
-    const s = sizePx;
-    const c = s / 2;
-    const bg = this.bgGfx;
-    const fg = this.frameGfx;
-    bg.clear();
-    fg.clear();
-
-    if (shape === 'diamond') {
-      // Fondo bajo el terreno (el recorte solo pinta dentro del rombo).
-      bg.fillStyle(colors.background, 1);
-      bg.fillPoints([
-        { x: c, y: 1 }, { x: s - 1, y: c }, { x: c, y: s - 1 }, { x: 1, y: c },
-      ], true);
-
-      fg.lineStyle(2, colors.border, 1);
-      fg.strokePoints([
-        { x: c, y: 2 }, { x: s - 2, y: c }, { x: c, y: s - 2 }, { x: 2, y: c },
-      ], true, true);
-      fg.lineStyle(1, 0x5c4a26, 0.9);
-      fg.strokePoints([
-        { x: c, y: 7 }, { x: s - 7, y: c }, { x: c, y: s - 7 }, { x: 7, y: c },
-      ], true, true);
-
-      // Muesca/brújula en la punta norte del rombo.
-      fg.fillStyle(colors.border, 1);
-      fg.fillTriangle(c, 3, c - 4, 11, c + 4, 11);
-      fg.fillStyle(colors.background, 1);
-      fg.fillTriangle(c, 7, c - 2, 11.5, c + 2, 11.5);
-      return;
-    }
-
-    bg.fillStyle(colors.background, 1);
-    bg.fillCircle(c, c, c);
-
-    fg.lineStyle(2, colors.border, 1);
-    if (shape === 'circle') fg.strokeCircle(c, c, c - 1);
-    else fg.strokeRect(1, 1, s - 2, s - 2);
-
-    fg.fillStyle(colors.border, 1);
-    fg.fillTriangle(c, 6, c - 4, 14, c + 4, 14);
+  private applyGeometry(): void {
+    const half = this.cfg.sizePx / 2;
+    this.cx = half;
+    this.cy = half;
+    this.radiusPx = this.cfg.shape === 'circle' ? half - 2 : half - 1;
+    this.z = (this.cfg.viewRadiusTiles * ISO_TILE_STEP_PX) / this.radiusPx;
+    this.stepPx = ISO_TILE_STEP_PX / this.z;
   }
 
   private relayout(): void {
     const { sizePx, marginPx } = this.cfg;
-    const half = sizePx / 2; 
-    this.cx = half; 
-    this.cy = half;
-    this.radiusPx = this.cfg.shape === 'circle' ? half - 2 : half - 1;
-    this.scale = this.radiusPx / this.cfg.viewRadiusTiles;
+    this.applyGeometry();
 
-    // Posición en la esquina inferior derecha
     this.container.setPosition(
-      this.scene.scale.width - sizePx - marginPx, 
-      this.scene.scale.height - sizePx - marginPx
+      this.scene.scale.width - sizePx - marginPx,
+      this.scene.scale.height - sizePx - marginPx,
     );
 
-    if (!this.terrainDirty && this.cropTex) this.blitCrop();
+    if (this.viewCanvas && this.viewCanvas.width !== sizePx) {
+      this.viewCanvas.width = sizePx;
+      this.viewCanvas.height = sizePx;
+      this.viewCtx = this.viewCanvas.getContext('2d');
+    }
+    this.terrain.setDisplaySize(sizePx, sizePx);
+    this.updateHitArea();
     this.drawFrame();
+    this.blitTerrain(this.world.getPlayerTile());
   }
 
-  public handleResize(): void { this.relayout(); }
+  private drawFrame(): void {
+    const { sizePx, colors, shape } = this.cfg;
+    const s = sizePx;
+    const c = s / 2;
+    this.bgGfx.clear();
+    this.frameGfx.clear();
+
+    if (shape === 'diamond') {
+      this.bgGfx.fillStyle(colors.background, 1);
+      this.bgGfx.fillPoints([{ x: c, y: 1 }, { x: s - 1, y: c }, { x: c, y: s - 1 }, { x: 1, y: c }], true);
+      this.frameGfx.lineStyle(2, colors.border, 1);
+      this.frameGfx.strokePoints([{ x: c, y: 2 }, { x: s - 2, y: c }, { x: c, y: s - 2 }, { x: 2, y: c }], true, true);
+      this.frameGfx.lineStyle(1, 0x5c4a26, 0.9);
+      this.frameGfx.strokePoints([{ x: c, y: 7 }, { x: s - 7, y: c }, { x: c, y: s - 7 }, { x: 7, y: c }], true, true);
+    } else {
+      this.bgGfx.fillStyle(colors.background, 1);
+      if (shape === 'circle') this.bgGfx.fillCircle(c, c, c);
+      else this.bgGfx.fillRect(0, 0, s, s);
+
+      this.frameGfx.lineStyle(2, colors.border, 1);
+      if (shape === 'circle') this.frameGfx.strokeCircle(c, c, c - 1);
+      else this.frameGfx.strokeRect(1, 1, s - 2, s - 2);
+    }
+
+    // Brújula honesta: en iso el norte del mundo (-Y del grid) no apunta arriba,
+    // apunta arriba-derecha. Dibujarla arriba mentiría sobre la orientación.
+    const n = this.northUnit();
+    this.drawCompass(this.frameGfx, c + n.x * (this.radiusPx - 9), c + n.y * (this.radiusPx - 9), n);
+  }
+
+  /** Norte del mundo = -Y del grid (mapLat crece al bajar y). Proyectado a px
+   *  de pantalla iso eso es arriba-derecha, no arriba. */
+  private northUnit(): { x: number; y: number } {
+    const v = isoTileToPx(0, -1);
+    const len = Math.hypot(v.x, v.y) || 1;
+    return { x: v.x / len, y: v.y / len };
+  }
+
+  private drawCompass(g: Phaser.GameObjects.Graphics, x: number, y: number, n: { x: number; y: number }): void {
+    const px = -n.y, py = n.x;
+    g.fillStyle(this.cfg.colors.border, 1);
+    g.fillPoints([
+      { x: x + n.x * 7, y: y + n.y * 7 },
+      { x: x + px * 3.5, y: y + py * 3.5 },
+      { x: x - n.x * 4, y: y - n.y * 4 },
+      { x: x - px * 3.5, y: y - py * 3.5 },
+    ], true);
+  }
 
   private startRadar(): void {
     this.scanTimer = this.scene.time.addEvent({
       delay: this.cfg.scanIntervalMs,
       loop: true,
-      callback: () => { this.enemies = this.opts.getEnemies(); },
+      callback: () => { this.enemies = this.world.getEnemies(); },
     });
-    this.enemies = this.opts.getEnemies();
+    this.enemies = this.world.getEnemies();
   }
 
-  private refreshTerrainAround(p: { x: number; y: number }): void {
-    if (!this.worldCtx || !this.worldCanvas) return;
+  // ── Terreno ────────────────────────────────────────────────────────────────
 
-    if (this.terrainDirty) {
-      if (!this.terrainLoadStarted) {
-        this.terrainLoadStarted = true;
-        this.redrawFullTerrainCache();
-      }
-      return;
-    }
-
-    const px = Math.floor(p.x), py = Math.floor(p.y);
-    if (px !== this.lastPlayerTile.x || py !== this.lastPlayerTile.y) {
-      this.lastPlayerTile = { x: px, y: py };
-      this.blitCrop();
-    } else {
-      const dx = p.x - this.blittedCenter.x, dy = p.y - this.blittedCenter.y;
-      if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) this.blitCrop();
-    }
+  private needsBlit(p: { x: number; y: number }): boolean {
+    if (Math.abs(p.x - this.blittedCenter.x) > this.cfg.blitMoveThresholdTiles) return true;
+    if (Math.abs(p.y - this.blittedCenter.y) > this.cfg.blitMoveThresholdTiles) return true;
+    const r = this.world.getCameraWorldRect();
+    const L = this.lastViewRect;
+    return Math.abs(r.left - L.left) > 0.5 || Math.abs(r.top - L.top) > 0.5
+      || Math.abs(r.right - L.right) > 0.5 || Math.abs(r.bottom - L.bottom) > 0.5;
   }
 
-  private cropCanvas: HTMLCanvasElement | null = null;
-  private cropTex: Phaser.Textures.CanvasTexture | null = null;
-  private blittedCenter = { x: NaN, y: NaN };
+  /** Semilado, en teselas, del cuadro de espacio de teselas que cubre el marco. */
+  private windowHalfTiles(): number {
+    const pad = this.cfg.shape === 'square' ? Math.SQRT2 : 1;
+    const reach = (this.radiusPx + 1) * pad * this.z;
+    // |mx-my| ≤ reach/ISO_HALF_W, |mx+my| ≤ reach/ISO_HALF_H ⇒ |mx| ≤ (a+b)/2.
+    return Math.ceil((reach / ISO_HALF_W + reach / ISO_HALF_H) / 2) + 1;
+  }
 
-  private blitCrop(): void {
-    if (!this.worldCanvas) return;
-    const p = this.opts.getPlayerTile();
-    const w = this.viewW();
-    const rx = Phaser.Math.Clamp(p.x - w / 2, 0, Math.max(0, GRID.width - w));
-    const ry = Phaser.Math.Clamp(p.y - w / 2, 0, Math.max(0, GRID.height - w));
+  private blitTerrain(p: { x: number; y: number }): void {
+    const ctx = this.viewCtx;
+    const world = this.discovery.canvas;
+    if (!ctx || !world) return;
 
-    if (!this.cropCanvas) {
-      this.cropCanvas = document.createElement('canvas');
-      this.cropCanvas.width = this.cfg.sizePx;
-      this.cropCanvas.height = this.cfg.sizePx;
+    const { sizePx } = this.cfg;
+    const half = this.windowHalfTiles();
+    const rx = Math.floor(p.x - half);
+    const ry = Math.floor(p.y - half);
+    const w = half * 2;
+
+    const sx0 = Math.max(0, rx), sy0 = Math.max(0, ry);
+    const sx1 = Math.min(GRID.width, rx + w), sy1 = Math.min(GRID.height, ry + w);
+    const sw = sx1 - sx0, sh = sy1 - sy0;
+
+    // Por debajo de ~2 px por tesela el filtrado del navegador no es fiable:
+    // se promedia 2×2 antes de proyectar para que el zoom-out no truene.
+    const lod = this.stepPx >= this.cfg.lodMinStepPx ? 1 : 2;
+    let ax = rx, ay = ry;
+    let source: HTMLCanvasElement = world;
+    if (lod > 1) {
+      ax = Math.floor(rx / lod) * lod;
+      ay = Math.floor(ry / lod) * lod;
+      const built = this.buildLod(world, ax, ay, w, lod);
+      if (built) source = built;
     }
-    const ctx = this.cropCanvas.getContext('2d');
-    if (!ctx) return;
-    
-    ctx.imageSmoothingEnabled = false;
-    ctx.clearRect(0, 0, this.cfg.sizePx, this.cfg.sizePx);
+    const isLod = source !== world;
 
-    // Recorte en Canvas 2D nativo (cero uso de WebGL Masks): círculo o rombo isométrico.
-    const s = this.cfg.sizePx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, sizePx, sizePx);
     ctx.save();
+    this.clipShape(ctx, sizePx);
+
+    // El terreno se ancla a la posición continua del jugador, no a la rejilla:
+    // anclarlo al tile entero haría saltar el mapa en cada cruce de tesela.
+    const playerIso = isoTileToPx(p.x, p.y);
+    const a = ISO_HALF_W / this.z;
+    const b = ISO_HALF_H / this.z;
+    ctx.transform(a, b, -a, b, this.cx - playerIso.x / this.z, this.cy - playerIso.y / this.z);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+
+    if (sw > 0 && sh > 0) {
+      if (isLod) {
+        ctx.drawImage(
+          source,
+          (sx0 - ax) / lod, (sy0 - ay) / lod, sw / lod, sh / lod,
+          sx0, sy0, sw, sh,
+        );
+      } else {
+        ctx.drawImage(source, sx0, sy0, sw, sh, sx0, sy0, sw, sh);
+      }
+    }
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.drawViewportRect(ctx, playerIso);
+    ctx.restore();
+
+    this.viewTex?.refresh();
+    this.blittedCenter = { x: p.x, y: p.y };
+    this.lastViewRect = this.world.getCameraWorldRect();
+  }
+
+  private buildLod(src: HTMLCanvasElement, ax: number, ay: number, w: number, lod: number): HTMLCanvasElement | null {
+    const side = Math.ceil(w / lod);
+    if (!this.lodCanvas) {
+      this.lodCanvas = document.createElement('canvas');
+      this.lodCanvas.width = side;
+      this.lodCanvas.height = side;
+      this.lodCtx = this.lodCanvas.getContext('2d');
+    } else if (this.lodCanvas.width !== side) {
+      this.lodCanvas.width = side;
+      this.lodCanvas.height = side;
+      this.lodCtx = this.lodCanvas.getContext('2d');
+    }
+    const ctx = this.lodCtx;
+    if (!ctx) return null;
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, side, side);
+
+    const x0 = Math.max(0, ax), y0 = Math.max(0, ay);
+    const x1 = Math.min(GRID.width, ax + w), y1 = Math.min(GRID.height, ay + w);
+    if (x1 <= x0 || y1 <= y0) return this.lodCanvas;
+
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(
+      src, x0, y0, x1 - x0, y1 - y0,
+      (x0 - ax) / lod, (y0 - ay) / lod, (x1 - x0) / lod, (y1 - y0) / lod,
+    );
+    return this.lodCanvas;
+  }
+
+  private clipShape(ctx: CanvasRenderingContext2D, s: number): void {
     ctx.beginPath();
     if (this.cfg.shape === 'circle') {
       ctx.arc(s / 2, s / 2, s / 2, 0, Math.PI * 2);
@@ -289,117 +402,48 @@ export class MinimapSystem {
       ctx.rect(0, 0, s, s);
     }
     ctx.clip();
-    ctx.drawImage(this.worldCanvas, rx, ry, w, w, 0, 0, s, s);
-    ctx.restore();
-
-    if (!this.cropTex) {
-      const key = '__minimap_view';
-      if (this.scene.textures.exists(key)) this.scene.textures.remove(key);
-      this.cropTex = this.scene.textures.addCanvas(key, this.cropCanvas) as Phaser.Textures.CanvasTexture;
-      this.terrainCanvas.setTexture(this.cropTex.key).setDisplaySize(this.cfg.sizePx, this.cfg.sizePx);
-    } else {
-      this.cropTex.refresh();
-    }
-    this.blittedCenter = { x: p.x, y: p.y };
   }
 
-  private redrawFullTerrainCache(): void {
-    if (!this.worldCtx) return;
-    this.terrainDirty = true;
-    this.worldCtx.fillStyle = '#070908';
-    this.worldCtx.fillRect(0, 0, GRID.width, GRID.height);
-
-    const playerRow = Math.floor(this.opts.getPlayerTile().y);
-    const pp = this.opts.getPlayerTile();
-    preloadGeoWindow(pp.x, pp.y, 96);
-    
-    // Pintar de a pocas filas para no congelar el navegador
-    const ROWS_PER_SLICE = 5; 
-    
-    preloadGeoRowsAsync(
-      ROWS_PER_SLICE,
-      (_y0, _y1) => {
-        if (this.destroyed) return;
-        this.paintRegion(0, GRID.width - 1, _y0, _y1);
-        if (!this.cropTex && _y0 <= playerRow && playerRow <= _y1) {
-          this.blitCrop();
-        } else if (this.cropTex) {
-          this.cropTex.refresh();
-        }
-      },
-      () => {
-        if (this.destroyed) return;
-        this.terrainDirty = false;
-        const p = this.opts.getPlayerTile();
-        this.lastPlayerTile = { x: Math.floor(p.x), y: Math.floor(p.y) };
-        this.blitCrop();
-      },
-    );
+  /** Lo que ve la cámara principal, dibujado dentro del recorte del radar. */
+  private drawViewportRect(ctx: CanvasRenderingContext2D, playerIso: { x: number; y: number }): void {
+    const r = this.world.getCameraWorldRect();
+    const x0 = this.cx + (r.left - playerIso.x) / this.z;
+    const y0 = this.cy + (r.top - playerIso.y) / this.z;
+    const x1 = this.cx + (r.right - playerIso.x) / this.z;
+    const y1 = this.cy + (r.bottom - playerIso.y) / this.z;
+    ctx.strokeStyle = cssHex(this.cfg.colors.viewport, 0.9);
+    ctx.lineWidth = 1;
+    ctx.strokeRect(Math.round(x0) + 0.5, Math.round(y0) + 0.5, Math.round(x1 - x0), Math.round(y1 - y0));
   }
 
-  private viewW(): number {
-    return Math.min(GRID.width, this.cfg.sizePx / this.scale);
-  }
-
-  private paintRegion(x0: number, x1: number, y0: number, y1: number): void {
-    const ctx = this.worldCtx;
-    if (!ctx) return;
-    for (let ty = y0; ty <= y1; ty++) {
-      for (let tx = x0; tx <= x1; tx++) {
-        const biome = getBiomeCached(tx, ty);
-        let c: string;
-        if (biome === 'Agua') {
-          c = this.waterShadeCached(tx, ty);
-        } else {
-          c = this.biomeShade(biome);
-        }
-        ctx.fillStyle = c;
-        ctx.fillRect(tx, ty, 1, 1);
-      }
-    }
-  }
-
-  private waterShadeCached(tx: number, ty: number): string {
-    const g = sampleGeoCached(tx, ty).kind;
-    if (g === 'canal') return '#2c5260';
-    if (g === 'mar') return '#102536';
-    return '#1b394a';
-  }
-
-  private biomeShade(b: string): string {
-    switch (b) {
-      case 'Bosque': return '#3a432f';
-      case 'Montaña': return '#3c3b39';
-      case 'Desierto': return '#5a4a33';
-      case 'Pantano': return '#303725';
-      case 'Nieve': return '#7d8387';
-      case 'Costa': return '#283b41';
-      default: return '#343c2e';
-    }
-  }
+  // ── Iconos ─────────────────────────────────────────────────────────────────
 
   private renderIcons(player: { x: number; y: number }): void {
     const g = this.icons;
     const { colors } = this.cfg;
     g.clear();
 
-    const toLocal = (wx: number, wy: number) => ({
-      lx: this.cx + (wx - player.x) * this.scale,
-      ly: this.cy + (wy - player.y) * this.scale,
-    });
+    const pIso = isoTileToPx(player.x, player.y);
+    const toRadar = (mx: number, my: number) => {
+      const i = isoTileToPx(mx, my);
+      return { lx: this.cx + (i.x - pIso.x) / this.z, ly: this.cy + (i.y - pIso.y) / this.z };
+    };
 
     g.fillStyle(colors.player, 1).fillCircle(this.cx, this.cy, 3);
     g.lineStyle(1, colors.enemy, 0.8).strokeCircle(this.cx, this.cy, 5);
 
-    const wp = this.opts.getWaypoint?.();
-    if (wp) this.drawPinnedBlip(g, toLocal(wp.x, wp.y), 3, colors.waypoint, true);
+    const wp = this.world.getWaypoint();
+    if (wp) this.drawPinnedBlip(g, toRadar(wp.x, wp.y), 3, colors.waypoint, true);
 
     for (const poi of this.pois) {
-      this.drawPinnedBlip(g, toLocal(poi.pos.x, poi.pos.y), poi.kind === 'capital' ? 3 : 2.4, colors.objective, poi.kind === 'capital');
+      const tx = Math.round(poi.pos.x), ty = Math.round(poi.pos.y);
+      if (!this.discovery.isExplored(tx, ty)) continue;
+      const size = poi.kind === 'capital' ? 3 : 2.4;
+      this.drawPinnedBlip(g, toRadar(poi.pos.x, poi.pos.y), size, colors.objective, poi.kind === 'capital');
     }
 
     for (const e of this.enemies) {
-      const { lx, ly } = toLocal(e.x, e.y);
+      const { lx, ly } = toRadar(e.x, e.y);
       if (this.insideShape(lx, ly)) g.fillStyle(colors.enemy, 1).fillCircle(lx, ly, 2);
     }
   }
@@ -420,21 +464,15 @@ export class MinimapSystem {
     const dx = lx - this.cx, dy = ly - this.cy;
     let t: number;
     if (this.cfg.shape === 'circle') {
-      const len = Math.hypot(dx, dy) || 1;
-      t = (this.radiusPx - size - 2) / len;
+      t = (this.radiusPx - size - 2) / (Math.hypot(dx, dy) || 1);
     } else if (this.cfg.shape === 'diamond') {
-      const m = this.radiusPx - size - 2;
-      t = m / ((Math.abs(dx) + Math.abs(dy)) || 1e-6);
+      t = (this.radiusPx - size - 2) / ((Math.abs(dx) + Math.abs(dy)) || 1e-6);
     } else {
       const m = this.radiusPx - size - 2;
       t = Math.min(m / (Math.abs(dx) || 1e-6), m / (Math.abs(dy) || 1e-6));
     }
     const bx = this.cx + dx * t, by = this.cy + dy * t;
-    g.fillStyle(color, 0.9).fillTriangle(
-      bx, by,
-      bx - size, by - size * 1.6,
-      bx + size, by - size * 1.6,
-    );
+    g.fillStyle(color, 0.9).fillTriangle(bx, by, bx - size, by - size * 1.6, bx + size, by - size * 1.6);
   }
 
   private insideShape(lx: number, ly: number): boolean {
@@ -443,34 +481,61 @@ export class MinimapSystem {
     return Math.abs(lx - this.cx) <= this.radiusPx && Math.abs(ly - this.cy) <= this.radiusPx;
   }
 
-  private nearestPoiToLocal(lx: number, ly: number, maxDist: number): GeoPoi | null {
-    const p = this.opts.getPlayerTile();
-    let best: GeoPoi | null = null; let bestD = maxDist;
+  private nearestPoiToLocal(lx: number, ly: number): GeoPoi | null {
+    const p = this.world.getPlayerTile();
+    const pIso = isoTileToPx(p.x, p.y);
+    let best: GeoPoi | null = null;
+    let bestD = this.cfg.hoverRadiusPx;
     for (const poi of this.pois) {
-      const wx = this.cx + (poi.pos.x - p.x) * this.scale;
-      const wy = this.cy + (poi.pos.y - p.y) * this.scale;
-      const d = Math.hypot(wx - lx, wy - ly);
+      if (!this.discovery.isExplored(Math.round(poi.pos.x), Math.round(poi.pos.y))) continue;
+      const i = isoTileToPx(poi.pos.x, poi.pos.y);
+      const dx = this.cx + (i.x - pIso.x) / this.z - lx;
+      const dy = this.cy + (i.y - pIso.y) / this.z - ly;
+      const d = Math.hypot(dx, dy);
       if (d < bestD) { bestD = d; best = poi; }
     }
     return best;
   }
 
+  // ── Input ──────────────────────────────────────────────────────────────────
+
   private bindInput(): void {
     this.container.on('pointerdown', (ptr: Phaser.Input.Pointer) => {
-      if (!this.opts.onMapClick) return;
-      const p = this.opts.getPlayerTile();
-      const tileX = Math.round(p.x + (ptr.x - this.container.x - this.cx) / this.scale);
-      const tileY = Math.round(p.y + (ptr.y - this.container.y - this.cy) / this.scale);
-      if (tileX < 0 || tileY < 0 || tileX >= GRID.width || tileY >= GRID.height) return;
-      if (isImpassableGeo(sampleGeoCached(tileX, tileY))) return;
-      this.opts.onMapClick(tileX, tileY);
+      const local = { x: ptr.x - this.container.x, y: ptr.y - this.container.y };
+      if (!this.insideShape(local.x, local.y)) return;
+
+      const p = this.world.getPlayerTile();
+      const pIso = isoTileToPx(p.x, p.y);
+      const tile = isoPxToTile(
+        pIso.x + (local.x - this.cx) * this.z,
+        pIso.y + (local.y - this.cy) * this.z,
+      );
+      const tx = Math.round(tile.x), ty = Math.round(tile.y);
+      if (tx < 0 || ty < 0 || tx >= GRID.width || ty >= GRID.height) return;
+      // No se da orden de andar hacia la niebla ni sobre teselas imposibles.
+      if (!this.discovery.isExplored(tx, ty)) return;
+      if (!this.world.isTileWalkable(tx, ty)) return;
+      this.world.moveToTile(tx, ty);
     });
 
     this.wheelHandler = (ptr, _go, _dx, dy) => {
       if (!this.isPointerOver(ptr.x, ptr.y)) return;
       const dir = dy > 0 ? 1 : -1;
-      this.setViewRadius(this.cfg.viewRadiusTiles + dir * 8);
+      this.setViewRadius(this.cfg.viewRadiusTiles + dir * this.cfg.wheelStepTiles);
     };
     this.scene.input.on('wheel', this.wheelHandler);
+
+    this.keyHandler = (e: KeyboardEvent) => {
+      if (e.key === '+' || e.key === '=') this.setViewRadius(this.cfg.viewRadiusTiles - this.cfg.wheelStepTiles);
+      else if (e.key === '-' || e.key === '_') this.setViewRadius(this.cfg.viewRadiusTiles + this.cfg.wheelStepTiles);
+    };
+    this.scene.input.keyboard?.on('keydown', this.keyHandler);
   }
+}
+
+function cssHex(value: number, alpha: number): string {
+  const r = (value >> 16) & 0xff;
+  const g = (value >> 8) & 0xff;
+  const b = value & 0xff;
+  return `rgba(${r},${g},${b},${alpha})`;
 }

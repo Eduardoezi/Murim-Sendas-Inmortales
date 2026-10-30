@@ -1,29 +1,22 @@
 // src/game/systems/AutoMapSystem.ts
 // ─────────────────────────────────────────────────────────────────────────────
-// Automapa estilo Diablo II (Tab). El mundo se pinta UNA vez por tile en un
-// lienzo 1000×1000 (solo lo explorado; el resto queda transparente = niebla).
-// Lo que se ve en pantalla es un recorte de 260×260 tiles centrado en el
-// jugador, dibujado en un canvas 760×760 → CanvasTexture. Cero Graphics por
-// tile: abrir/cerrar el mapa no cuesta nada y caminar solo repinta el anillo
-// recién revelado. Todo el overlay es no interactivo para que el clic-a-mover
-// siga funcionando con el mapa abierto.
+// Automapa estilo Diablo II (Tab). El terreno ya no se pinta aquí: lo pinta
+// MapDiscovery (solo lo explorado; el resto queda transparente = niebla), así
+// que el radar y esta pantalla son literalmente el mismo mapa. Aquí se recorta
+// la ventana de 120×120 teselas en un canvas VIEW_PX² y se proyectan marcadores.
+// Todo el overlay es no interactivo para que el clic-a-mover siga funcionando
+// con el mapa abierto. Vive en HudScene, fuera de la cámara del mundo.
 // ─────────────────────────────────────────────────────────────────────────────
 import Phaser from 'phaser';
-import { getTileTypeAt } from '../../core/data/world/generators/terrainGenerator';
-import type { TileType } from '../../core/data/world/generators/terrainGenerator';
-import {
-  getInstanceInChunk,
-} from '../../core/data/world/generators/instanceGenerator';
-import type { InstancePoi } from '../../core/data/world/generators/instanceGenerator';
 import { INSTANCE_COLOR } from '../../core/data/world/generators/instanceGenerator';
 import { GeoPoi, getWorldPois } from '../../core/data/world/geoPois';
 import { WORLD_SEED } from '../../core/data/world/seeds/worldSeed';
+import { MapDiscovery } from './MapDiscovery';
+import { HudDataSource } from './HudDataSource';
 
 const GRID = WORLD_SEED.gridSize;
-const REVEAL_RADIUS = 13;
 const VIEW_WORLD_TILES = 120;
 const VIEW_PX = 900;
-const DEPTH = 99999;
 
 const POI_STYLE: Record<GeoPoi['kind'], { color: number; radius: number }> = {
   capital: { color: 0xfacc15, radius: 3.6 },
@@ -31,22 +24,18 @@ const POI_STYLE: Record<GeoPoi['kind'], { color: number; radius: number }> = {
   landmark: { color: 0xe879f9, radius: 2.8 },
 };
 
-const TILE_COLOR: Record<TileType, string> = {
-  hierba: '#3c3b2e',
-  agua: '#21343d',
-  arena: '#57492f',
-  nieve: '#7d8387',
-  montana: '#36363a',
-  pantano: '#2b3223',
-};
-
 export interface AutoMapOptions {
-  getPlayerTile: () => { x: number; y: number };
+  world: HudDataSource;
+  discovery: MapDiscovery;
+  /** Profundidad dentro de HudScene. */
+  depth?: number;
 }
 
 export class AutoMapSystem {
   private scene: Phaser.Scene;
-  private opts: AutoMapOptions;
+  private world: HudDataSource;
+  private discovery: MapDiscovery;
+  private depth?: number;
 
   private container!: Phaser.GameObjects.Container;
   private backdrop!: Phaser.GameObjects.Rectangle;
@@ -57,20 +46,13 @@ export class AutoMapSystem {
   private hint!: Phaser.GameObjects.Text;
   private legend!: Phaser.GameObjects.Text;
 
-  private worldCanvas: HTMLCanvasElement;
-  private worldCtx: CanvasRenderingContext2D | null;
   private viewCanvas: HTMLCanvasElement;
   private viewCtx: CanvasRenderingContext2D | null;
   private viewTex: Phaser.Textures.CanvasTexture | null = null;
 
-  private explored = new Set<number>();
-  /** Estado por tile: 0 sin explorar, 1 normal, 2 montaña, 3 agua. */
-  private exploredType = new Uint8Array(GRID.width * GRID.height);
-  private instances = new Map<string, InstancePoi>();
   private pois: GeoPoi[];
 
   private isOpen = false;
-  private lastReveal = { x: NaN, y: NaN };
   private lastBlit = { x: NaN, y: NaN };
   private blitCenter = { sx: 0, sy: 0 };
   private mapRect = { left: 0, top: 0, size: VIEW_PX };
@@ -80,13 +62,10 @@ export class AutoMapSystem {
 
   constructor(scene: Phaser.Scene, opts: AutoMapOptions) {
     this.scene = scene;
-    this.opts = opts;
+    this.world = opts.world;
+    this.discovery = opts.discovery;
+    this.depth = opts.depth;
     this.pois = getWorldPois();
-
-    this.worldCanvas = document.createElement('canvas');
-    this.worldCanvas.width = GRID.width;
-    this.worldCanvas.height = GRID.height;
-    this.worldCtx = this.worldCanvas.getContext('2d');
 
     this.viewCanvas = document.createElement('canvas');
     this.viewCanvas.width = VIEW_PX;
@@ -131,72 +110,18 @@ export class AutoMapSystem {
     this.container.destroy();
   }
 
-  /// Llamado por frame: revela niebla (barato si no cambias de tile) y, con
-  /// el mapa abierto, re-recorta la vista y redibuja marcadores.
+  /// Llamado por frame (después de MapDiscovery.update): con el mapa abierto
+  /// re-recorta la ventana al cambiar de tesela y redibuja marcadores.
   public update(): void {
-    const p = this.opts.getPlayerTile();
+    if (!this.isOpen) return;
+    const p = this.world.getPlayerTile();
     const px = Math.floor(p.x);
     const py = Math.floor(p.y);
-    if (px !== this.lastReveal.x || py !== this.lastReveal.y) {
-      this.lastReveal = { x: px, y: py };
-      this.revealAround(px, py);
-      if (this.isOpen) this.lastBlit = { x: NaN, y: NaN };
-    }
-    if (!this.isOpen) return;
     if (px !== this.lastBlit.x || py !== this.lastBlit.y) {
       this.blitView(p);
       this.lastBlit = { x: px, y: py };
     }
     this.drawMarkers(p);
-  }
-
-  // ── Niebla de guerra ───────────────────────────────────────────────────────
-
-  private revealAround(cx: number, cy: number): void {
-    const ctx = this.worldCtx;
-    if (!ctx) return;
-
-    const r = REVEAL_RADIUS;
-    const r2 = r * r;
-    const touchedChunks = new Set<string>();
-
-    for (let dy = -r; dy <= r; dy++) {
-      const y = cy + dy;
-      if (y < 0 || y >= GRID.height) continue;
-      for (let dx = -r; dx <= r; dx++) {
-        const x = cx + dx;
-        if (x < 0 || x >= GRID.width) continue;
-        if (dx * dx + dy * dy > r2) continue;
-
-        touchedChunks.add(`${Math.floor(x / 16)},${Math.floor(y / 16)}`);
-
-        const idx = y * GRID.width + x;
-        if (this.explored.has(idx)) continue;
-        this.explored.add(idx);
-
-        const type = getTileTypeAt(x, y);
-        this.exploredType[idx] = type === 'montana' ? 2 : type === 'agua' ? 3 : 1;
-        ctx.fillStyle = this.tileColor(type, x, y);
-        ctx.fillRect(x, y, 1, 1);
-      }
-    }
-
-    // Descubrimiento de entradas de instancia dentro del anillo revelado.
-    for (const key of touchedChunks) {
-      const [chx, chy] = key.split(',').map(Number);
-      const inst = getInstanceInChunk(chx, chy);
-      if (!inst) continue;
-      const ddx = inst.x - cx;
-      const ddy = inst.y - cy;
-      if (ddx * ddx + ddy * ddy <= r2) this.instances.set(inst.id, inst);
-    }
-  }
-
-  private tileColor(type: TileType, x: number, y: number): string {
-    const base = TILE_COLOR[type] ?? TILE_COLOR.hierba;
-    // Ruido determinista por tile: evita manchas planas de 1 px.
-    const h = ((x * 374761393) ^ (y * 668265263)) >>> 0;
-    return shadeHex(base, (h % 15) - 7);
   }
 
   // ── Recorte de la vista ────────────────────────────────────────────────────
@@ -213,7 +138,7 @@ export class AutoMapSystem {
     ctx.imageSmoothingEnabled = false;
     ctx.clearRect(0, 0, VIEW_PX, VIEW_PX);
     ctx.drawImage(
-      this.worldCanvas,
+      this.discovery.canvas,
       sx, sy, VIEW_WORLD_TILES, VIEW_WORLD_TILES,
       0, 0, VIEW_PX, VIEW_PX,
     );
@@ -253,11 +178,10 @@ export class AutoMapSystem {
       for (let x = 0; x < w; x++) {
         const wx = sx + x;
         if (wx >= GRID.width) break;
-        const idx = wy * GRID.width + wx;
-        const t = this.exploredType[idx];
+        const t = this.discovery.typeAt(wx, wy);
         if (t < 2) continue;
-        const left = x > 0 ? this.exploredType[idx - 1] : 0;
-        const up = y > 0 ? this.exploredType[idx - GRID.width] : 0;
+        const left = wx > 0 ? this.discovery.typeAt(wx - 1, wy) : 0;
+        const up = wy > 0 ? this.discovery.typeAt(wx, wy - 1) : 0;
         if (left !== 0 && left !== t) {
           ctx.moveTo(x * px, y * px);
           ctx.lineTo(x * px, (y + 1) * px);
@@ -284,7 +208,7 @@ export class AutoMapSystem {
     });
 
     for (const poi of this.pois) {
-      if (!this.explored.has(Math.round(poi.pos.y) * GRID.width + Math.round(poi.pos.x))) continue;
+      if (!this.discovery.isExplored(Math.round(poi.pos.x), Math.round(poi.pos.y))) continue;
       const pt = toScreen(poi.pos.x, poi.pos.y);
       if (!this.insideMap(pt.x, pt.y)) continue;
       const style = POI_STYLE[poi.kind];
@@ -292,7 +216,7 @@ export class AutoMapSystem {
       g.lineStyle(1, 0xffffff, 0.35).strokeCircle(pt.x, pt.y, style.radius + 1.5);
     }
 
-    for (const inst of this.instances.values()) {
+    for (const inst of this.discovery.discoveredInstances()) {
       const pt = toScreen(inst.x, inst.y);
       if (!this.insideMap(pt.x, pt.y)) continue;
       const color = INSTANCE_COLOR[inst.kind];
@@ -353,7 +277,7 @@ export class AutoMapSystem {
       this.legend,
       this.hint,
     ]);
-    this.container.setScrollFactor(0).setDepth(DEPTH).setVisible(false);
+    this.container.setDepth(this.depth ?? 0).setVisible(false);
   }
 
   private relayout(): void {
@@ -452,12 +376,4 @@ function diamondPoints(cx: number, cy: number, r: number): Phaser.Geom.Point[] {
     new Phaser.Geom.Point(cx, cy + r),
     new Phaser.Geom.Point(cx - r * 0.72, cy),
   ];
-}
-
-function shadeHex(hex: string, delta: number): string {
-  const n = parseInt(hex.slice(1), 16);
-  const r = Math.min(255, Math.max(0, ((n >> 16) & 0xff) + delta));
-  const g = Math.min(255, Math.max(0, ((n >> 8) & 0xff) + delta));
-  const b = Math.min(255, Math.max(0, (n & 0xff) + delta));
-  return `rgb(${r},${g},${b})`;
 }

@@ -233,34 +233,6 @@ export function preloadGeoWindow(cx: number, cy: number, radius: number): void {
   }
 }
 
-/** Precarga asíncrona por franjas (para el lienzo del minimapa): pinta una
- *  fila de `rowsPerSlice` por microtask, nunca bloquea >~1 frame. */
-export function preloadGeoRowsAsync(
-  rowsPerSlice: number,
-  onRowDone?: (y0: number, y1: number) => void,
-  onDone?: () => void,
-): void {
-  let y = 0;
-  const slice = () => {
-    const y1 = Math.min(GH - 1, y + rowsPerSlice - 1);
-    for (let yy = y; yy <= y1; yy++) {
-      for (let x = 0; x < GW; x++) {
-        const i = idxOf(x, yy);
-        if (!(geoBytes[i] & VALID_BIT)) {
-          geoBytes[i] = encode(sampleGeo(x, yy));
-          biomeBytes[i] = biomeCode(naturalBiomeFromGeo(decode(geoBytes[i]), x, yy)) | VALID_BIT;
-          pendingGeo.delete(i);
-        }
-      }
-    }
-    onRowDone?.(y, y1);
-    y = y1 + 1;
-    if (y < GH) queueMicrotask(slice);
-    else onDone?.();
-  };
-  slice();
-}
-
 export function setGeoBudgetMs(ms: number): void { budgetUs = ms * 1000; }
 
 /** Estadísticas para debug (window.__geoStats si hace falta). */

@@ -1,6 +1,7 @@
 // src/game/config.ts
 import Phaser from 'phaser';
 import { WorldScene } from './scenes/WorldScene';
+import { HudScene } from './scenes/HudScene';
 
 
 export const WORLD_SCALE = 1.0; // Ajusta este valor para toda la entidad del juego
@@ -9,7 +10,9 @@ export const getGameConfig = (parentElement: HTMLElement): Phaser.Types.Core.Gam
   width: '100%',
   height: '100%',
   parent: parentElement,
-  scene: [WorldScene],
+  // WorldScene arranca sola; HudScene se añade pero la lanza WorldScene al
+  // terminar su create, para que el minimapa nazca con el mundo ya vivo.
+  scene: [WorldScene, HudScene],
   scale: {
     mode: Phaser.Scale.RESIZE,
     autoCenter: Phaser.Scale.CENTER_BOTH
