@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { getJointPosition, Point2D } from '../utils/kinematics';
+import { CLIFF_STEP, ELEVATION_DEPTH_STEP } from '../rendering/tileTextures';
 import {
   ArmorType,
   PlayerAppearance,
@@ -24,18 +25,23 @@ export interface ProceduralCharacterConfig {
   appearance: PlayerAppearance;
   equipment: PlayerEquipment;
   isWalkable: (x: number, y: number) => boolean;
+  /** Elevación 0..3 del tile. Sin ella, todo el mundo es plano. */
+  getElevation?: (x: number, y: number) => number;
 }
 
 const TILE_HALF_W = 32;
 const TILE_HALF_H = 16;
 /** Altura del ancla isométrica al suelo visible (misma convención que los tiles). */
 const GROUND_Y = 16;
-const HIP_Y = -8;
+/** Cadera en reposo: con 24 px de pierna deja una flexión leve y alcanzable. */
+const BASE_HIP_Y = -7.85;
 const HIP_X = 4.2;
 const TORSO_HEIGHT = 26;
 const SHOULDER_X = 8.2;
 const UPPER_LEG = 12;
 const LOWER_LEG = 12;
+/** Alcance útil de la pierna; evita que la IK quede exactamente extendida. */
+const LEG_REACH = UPPER_LEG + LOWER_LEG - 0.05;
 const UPPER_ARM = 10;
 const LOWER_ARM = 10;
 const HEAD_OFFSET_Y = -TORSO_HEIGHT - 10;
@@ -45,6 +51,19 @@ const MOVE_SPEED = 5; // tiles por segundo
 const STUCK_LIMIT_MS = 320;
 const ATTACK_DURATION_MS = 320;
 const ATTACK_EFFECT_MS = 150;
+const JUMP_DURATION_MS = 500;
+const JUMP_ARC_HEIGHT = 30;
+
+// Ciclo de zancada: el pie apoya en suelo todo el apoyo y solo se eleva en el
+// avance; la cadera baja al pisar (peso) y se asienta un instante al frenar.
+const WALK_RATE = 0.013; // rad/ms
+const STRIDE = 5.2; // px de desplazamiento horizontal del pie
+const SWING_LIFT = 2.2; // px de despegue del pie en el aire
+const WALK_DIP = 1.15; // descenso de cadera en el apoyo
+const WALK_RISE = 0.1; // ascenso de cadera al cruzar las piernas
+const SETTLE_MS = 380; // asentamiento al detenerse
+const SETTLE_DIP = 2.6; // compresión de rodillas al frenar
+const RESUME_MS = 180; // empalme al reanudar la marcha
 
 interface Palette {
   skin: number;
@@ -117,6 +136,39 @@ function rotatePoint(x: number, y: number, angle: number): Point2D {
   return { x: x * cos - y * sin, y: x * sin + y * cos };
 }
 
+function easeOutCubic(t: number): number {
+  const inv = 1 - t;
+  return 1 - inv * inv * inv;
+}
+
+/** Objetivo del pie en un ciclo: x de zancada y despegue solo al avanzar. */
+function gaitFoot(phase: number): { fx: number; lift: number } {
+  return {
+    fx: Math.sin(phase) * STRIDE,
+    lift: Math.max(0, Math.cos(phase)) * SWING_LIFT,
+  };
+}
+
+/** IK de dos huesos cadera→rodilla→pie. Ángulos con 0 = abajo y + hacia +x. */
+function solveLeg(fx: number, fy: number): { hipAngle: number; kneeAngle: number } {
+  const dist = Phaser.Math.Clamp(Math.hypot(fx, fy), 1, LEG_REACH);
+  const baseAngle = Math.atan2(fx, fy);
+  const hipCos = Phaser.Math.Clamp(
+    (dist * dist + UPPER_LEG * UPPER_LEG - LOWER_LEG * LOWER_LEG) / (2 * dist * UPPER_LEG),
+    -1,
+    1,
+  );
+  const kneeCos = Phaser.Math.Clamp(
+    (UPPER_LEG * UPPER_LEG + LOWER_LEG * LOWER_LEG - dist * dist) / (2 * UPPER_LEG * LOWER_LEG),
+    -1,
+    1,
+  );
+  return {
+    hipAngle: baseAngle + Math.acos(hipCos),
+    kneeAngle: Math.PI - Math.acos(kneeCos),
+  };
+}
+
 /**
  * Avatar 2.5D procedural: un Container con sub-gráficos independientes.
  * Sin spritesheets, sin Arcade Physics, sin tweens de caminata.
@@ -125,12 +177,14 @@ export class ProceduralCharacter extends Phaser.GameObjects.Container {
   public cartX: number;
   public cartY: number;
   public isMoving = false;
+  public isJumping = false;
   public facing: Facing8 = 'down';
   public equipment: PlayerEquipment;
 
   private appearance: PlayerAppearance;
   private palette: Palette;
   private readonly isWalkable: (x: number, y: number) => boolean;
+  private readonly getElevation: (x: number, y: number) => number;
 
   private readonly shadow: Phaser.GameObjects.Graphics;
   private readonly legL: Phaser.GameObjects.Graphics;
@@ -147,6 +201,32 @@ export class ProceduralCharacter extends Phaser.GameObjects.Container {
   private isAttacking = false;
   private attackStartedAt = Number.NEGATIVE_INFINITY;
 
+  // Fases propias (no `time` absoluto): al cambiar de marcha no hay salto.
+  private walkPhase = 0;
+  private breathPhase = 0;
+  private locomotion = 0;
+  private wasMoving = false;
+
+  // Pose congelada al frenar: los pies no se mueven de donde pisaron.
+  private stopAt = Number.NEGATIVE_INFINITY;
+  private stopHip = BASE_HIP_Y;
+  private stopFootL = 0;
+  private stopFootR = 0;
+  private stopLiftL = 0;
+  private stopLiftR = 0;
+
+  // Pose de partida al reanudar: empalma cadera y despegue sin tirones.
+  private resumeAt = Number.NEGATIVE_INFINITY;
+  private resumeHip = BASE_HIP_Y;
+  private resumeLiftL = 0;
+  private resumeLiftR = 0;
+
+  private lastHipY = BASE_HIP_Y;
+  private lastFootL = 0;
+  private lastFootR = 0;
+  private lastLiftL = 0;
+  private lastLiftR = 0;
+
   constructor(scene: Phaser.Scene, config: ProceduralCharacterConfig) {
     super(scene, 0, 0);
 
@@ -155,6 +235,7 @@ export class ProceduralCharacter extends Phaser.GameObjects.Container {
     this.appearance = { ...config.appearance };
     this.equipment = { ...config.equipment };
     this.isWalkable = config.isWalkable;
+    this.getElevation = config.getElevation ?? (() => 0);
     this.palette = this.buildPalette();
 
     this.shadow = this.addPart(-20);
@@ -190,7 +271,7 @@ export class ProceduralCharacter extends Phaser.GameObjects.Container {
 
   /** Sigue un path de tiles (A*) sin tweens: el update avanza en cartX/cartY. */
   public walkPath(path: Point2D[], onComplete?: () => void): void {
-    if (this.isMoving) return;
+    if (this.isMoving || this.isJumping) return;
     if (!path || path.length < 2) {
       onComplete?.();
       return;
@@ -200,6 +281,71 @@ export class ProceduralCharacter extends Phaser.GameObjects.Container {
     this.pathComplete = onComplete;
     this.stuckMs = 0;
     this.isMoving = true;
+  }
+
+  /**
+   * Salto parabólico de 500 ms hasta el tile destino. Durante el vuelo se
+   * desactivan colisiones y movimiento, la sombra se queda en el suelo y el
+   * depth interpola del piso bajo al alto: al aterrizar, el personaje ya
+   * ordena por delante de los objetos del nivel inferior.
+   */
+  public jumpTo(tileX: number, tileY: number, onComplete?: () => void): void {
+    if (this.isJumping || this.isMoving) return;
+
+    const startX = this.cartX;
+    const startY = this.cartY;
+    const startPixelX = (startX - startY) * TILE_HALF_W;
+    const startPixelY = (startX + startY) * TILE_HALF_H;
+    const endPixelX = (tileX - tileY) * TILE_HALF_W;
+    const endPixelY = (tileX + tileY) * TILE_HALF_H;
+    const startElev = this.getElevation(Math.round(startX), Math.round(startY));
+    const endElev = this.getElevation(tileX, tileY);
+    const startGroundY = startPixelY - startElev * CLIFF_STEP;
+    const endGroundY = endPixelY - endElev * CLIFF_STEP;
+    const startDepth = startPixelY + GROUND_Y + startElev * ELEVATION_DEPTH_STEP;
+    const endDepth = endPixelY + GROUND_Y + endElev * ELEVATION_DEPTH_STEP;
+
+    this.isJumping = true;
+    this.movePath = [];
+    this.pathComplete = undefined;
+    this.stuckMs = 0;
+
+    const state = { t: 0 };
+    this.scene.tweens.add({
+      targets: state,
+      t: 1,
+      duration: JUMP_DURATION_MS,
+      ease: 'Linear',
+      onUpdate: () => {
+        const t = state.t;
+        const arc = Math.sin(t * Math.PI) * JUMP_ARC_HEIGHT;
+        const groundY = Phaser.Math.Linear(startGroundY, endGroundY, t);
+
+        this.cartX = Phaser.Math.Linear(startX, tileX, t);
+        this.cartY = Phaser.Math.Linear(startY, tileY, t);
+        this.x = Phaser.Math.Linear(startPixelX, endPixelX, t);
+        this.y = groundY - arc;
+        this.setDepth(Phaser.Math.Linear(startDepth, endDepth, t));
+
+        // El Graphics de la sombra dibuja la elipse en GROUND_Y; desplazarlo
+        // +arc la mantiene clavada en el suelo mientras sube el cuerpo.
+        const lift = arc / JUMP_ARC_HEIGHT;
+        this.shadow.y = arc;
+        this.shadow.setScale(1 - lift * 0.22, 1 - lift * 0.22);
+        this.shadow.setAlpha(1 - lift * 0.35);
+      },
+      onComplete: () => {
+        this.cartX = tileX;
+        this.cartY = tileY;
+        this.isJumping = false;
+        this.shadow.y = 0;
+        this.shadow.setScale(1);
+        this.shadow.setAlpha(1);
+        this.project();
+        this.updateFacing(tileX - startX, tileY - startY);
+        onComplete?.();
+      },
+    });
   }
 
   public setAppearance(appearance: Partial<PlayerAppearance>): void {
@@ -239,15 +385,22 @@ export class ProceduralCharacter extends Phaser.GameObjects.Container {
   // ───────────────────────── Update / movimiento ─────────────────────────
 
   public update(time: number, delta: number): void {
-    this.updateMovement(delta);
-    this.project();
-    this.updateRig(time);
+    if (!this.isJumping) {
+      this.updateMovement(delta);
+      this.project();
+    }
+    this.updateRig(time, delta);
   }
 
   private project(): void {
+    const groundY = (this.cartX + this.cartY) * TILE_HALF_H;
+    const elevation = this.getElevation(Math.round(this.cartX), Math.round(this.cartY));
     this.x = (this.cartX - this.cartY) * TILE_HALF_W;
-    this.y = (this.cartX + this.cartY) * TILE_HALF_H;
-    this.setDepth(this.y + GROUND_Y);
+    this.y = groundY - elevation * CLIFF_STEP;
+    // El depth usa el suelo sin elevar + un sesgo por nivel (18 px): al saltar
+    // un nivel hacia el norte el personaje gana 2 de depth neto, así que pasa
+    // por delante de los objetos del piso inferior.
+    this.setDepth(groundY + GROUND_Y + elevation * ELEVATION_DEPTH_STEP);
   }
 
   private updateMovement(deltaMs: number): void {
@@ -315,7 +468,12 @@ export class ProceduralCharacter extends Phaser.GameObjects.Container {
   }
 
   private canStandAt(x: number, y: number): boolean {
-    return this.isWalkable(Math.round(x), Math.round(y));
+    const tx = Math.round(x);
+    const ty = Math.round(y);
+    if (!this.isWalkable(tx, ty)) return false;
+    // No se camina entre alturas distintas: cada desnivel es un acantilado.
+    return this.getElevation(tx, ty)
+      === this.getElevation(Math.round(this.cartX), Math.round(this.cartY));
   }
 
   private finishPath(): void {
@@ -354,20 +512,92 @@ export class ProceduralCharacter extends Phaser.GameObjects.Container {
 
   // ───────────────────────── Animación matemática ─────────────────────────
 
-  private updateRig(time: number): void {
+  private updateRig(time: number, deltaMs = 0): void {
+    const dt = Phaser.Math.Clamp(deltaMs, 0, 64);
     const moving = this.isMoving;
-    const stride = Math.sin(time * (moving ? 0.013 : 0.0016));
-    const breath = Math.sin(time * 0.0016);
 
-    const legSwing = moving ? stride * 0.55 : breath * 0.06;
-    const legRSwing = -legSwing;
-    const kneeL = moving ? Math.max(0, -stride) * 0.7 : 0.03 + Math.max(0, -breath) * 0.04;
-    const kneeR = moving ? Math.max(0, stride) * 0.7 : 0.03 + Math.max(0, breath) * 0.04;
+    this.breathPhase += dt * 0.0016;
+    if (moving) this.walkPhase += dt * WALK_RATE;
 
-    const bob = moving ? -Math.abs(stride) * 1.8 : breath * 1.0;
-    const tilt = Phaser.Math.DegToRad(moving ? stride * 1.7 : breath * 0.45);
+    // El empalme parte de la pose dibujada en el frame anterior: frenar o
+    // arrancar nunca salta de posición.
+    if (moving !== this.wasMoving) {
+      if (moving) {
+        this.resumeAt = time;
+        this.resumeHip = this.lastHipY;
+        this.resumeLiftL = this.lastLiftL;
+        this.resumeLiftR = this.lastLiftR;
+      } else {
+        this.stopAt = time;
+        this.stopHip = this.lastHipY;
+        this.stopFootL = this.lastFootL;
+        this.stopFootR = this.lastFootR;
+        this.stopLiftL = this.lastLiftL;
+        this.stopLiftR = this.lastLiftR;
+      }
+      this.wasMoving = moving;
+    }
 
-    const torsoY = HIP_Y + bob;
+    const locoBlend = dt > 0 ? 1 - Math.exp(-dt / 120) : 0;
+    this.locomotion = Phaser.Math.Linear(this.locomotion, moving ? 1 : 0, locoBlend);
+
+    const breath = Math.sin(this.breathPhase);
+    const strideWave = Math.sin(this.walkPhase);
+    const loco = this.locomotion;
+
+    const gaitL = gaitFoot(this.walkPhase);
+    const gaitR = gaitFoot(this.walkPhase + Math.PI);
+
+    let footL: number;
+    let footR: number;
+    let liftL: number;
+    let liftR: number;
+
+    if (moving) {
+      const resume = easeOutCubic(Phaser.Math.Clamp((time - this.resumeAt) / RESUME_MS, 0, 1));
+      footL = gaitL.fx;
+      footR = gaitR.fx;
+      liftL = Phaser.Math.Linear(this.resumeLiftL, gaitL.lift, resume);
+      liftR = Phaser.Math.Linear(this.resumeLiftR, gaitR.lift, resume);
+    } else {
+      // Al frenar solo aterriza el pie que venía en el aire, donde está; el
+      // pie de apoyo no se mueve ni un píxel.
+      const land = easeOutCubic(
+        Phaser.Math.Clamp((time - this.stopAt) / (SETTLE_MS * 0.55), 0, 1),
+      );
+      footL = this.stopFootL;
+      footR = this.stopFootR;
+      liftL = Phaser.Math.Linear(this.stopLiftL, 0, land);
+      liftR = Phaser.Math.Linear(this.stopLiftR, 0, land);
+    }
+
+    // Cadera: baja al apoyar el pie y se hunde un instante al frenar; la
+    // rodilla absorbe ese recorrido y el pie queda clavado en el suelo.
+    // En reposo la respiración solo hunde la cadera (nunca la eleva): subirla
+    // alargaría la pierna más allá de su alcance y el pie flotaría.
+    const idleHip = BASE_HIP_Y + Math.max(0, -breath) * 0.3;
+    let hipY: number;
+    if (moving) {
+      const spread = Math.abs(strideWave);
+      const gaitHip = BASE_HIP_Y + WALK_DIP * spread - WALK_RISE * (1 - spread);
+      const resume = easeOutCubic(Phaser.Math.Clamp((time - this.resumeAt) / RESUME_MS, 0, 1));
+      hipY = Phaser.Math.Linear(this.resumeHip, gaitHip, resume);
+    } else {
+      const settle = Phaser.Math.Clamp((time - this.stopAt) / SETTLE_MS, 0, 1);
+      const recover = easeOutCubic(Phaser.Math.Clamp((settle - 0.4) / 0.6, 0, 1));
+      const compression = Math.sin(Math.PI * Phaser.Math.Clamp(settle * 1.1, 0, 1))
+        * (1 - settle) * SETTLE_DIP;
+      hipY = Phaser.Math.Linear(this.stopHip, idleHip, recover) + compression;
+    }
+
+    // Presupuesto de alcance: la cadera nunca queda tan alta que la pierna
+    // no llegue al pie dibujado. Sin esto el IK recorta y el pie "flota".
+    const maxFx = Math.max(Math.abs(footL), Math.abs(footR));
+    const reach = Math.sqrt(Math.max(1, LEG_REACH * LEG_REACH - maxFx * maxFx));
+    hipY = Math.max(hipY, GROUND_Y - reach);
+
+    const torsoY = hipY + (1 - loco) * breath * 0.5;
+    const tilt = Phaser.Math.DegToRad(strideWave * 1.7 * loco + breath * 0.45 * (1 - loco));
     this.torso.setPosition(0, torsoY).setRotation(tilt);
 
     const shoulderL = rotatePoint(-SHOULDER_X, -TORSO_HEIGHT + 2, tilt);
@@ -378,19 +608,24 @@ export class ProceduralCharacter extends Phaser.GameObjects.Container {
     const headAnchor = rotatePoint(0, HEAD_OFFSET_Y, tilt);
     this.head.setPosition(
       headAnchor.x,
-      torsoY + headAnchor.y + (moving ? Math.sin(time * 0.026) * 0.5 : breath * 0.25),
+      torsoY + headAnchor.y
+        + Math.sin(this.walkPhase * 2) * 0.5 * loco
+        + breath * 0.25 * (1 - loco),
     );
 
-    // La respiración mueve el cuerpo completo: las piernas siguen el mismo bob
-    // para que los pies no queden anclados mientras el torso sube y baja.
-    const legBob = moving ? bob * 0.35 : bob;
-    this.legL.setPosition(-HIP_X, HIP_Y + legBob);
-    this.legR.setPosition(HIP_X, HIP_Y + legBob);
+    this.legL.setPosition(-HIP_X, hipY);
+    this.legR.setPosition(HIP_X, hipY);
+    const ikL = solveLeg(footL, GROUND_Y - liftL - hipY);
+    const ikR = solveLeg(footR, GROUND_Y - liftR - hipY);
+    this.drawLeg(this.legL, ikL.hipAngle, ikL.kneeAngle, true);
+    this.drawLeg(this.legR, ikR.hipAngle, ikR.kneeAngle, false);
 
-    let armLAngle = moving ? -stride * 0.45 : -breath * 0.03;
-    let armRAngle = moving ? stride * 0.45 : breath * 0.03;
-    let elbowL = 0.18 + (moving ? Math.max(0, stride) * 0.35 : Math.max(0, breath) * 0.04);
-    let elbowR = 0.18 + (moving ? Math.max(0, -stride) * 0.35 : Math.max(0, -breath) * 0.04);
+    let armLAngle = -strideWave * 0.45 * loco - breath * 0.03 * (1 - loco);
+    let armRAngle = strideWave * 0.45 * loco + breath * 0.03 * (1 - loco);
+    let elbowL = 0.18 + Math.max(0, strideWave) * 0.35 * loco
+      + Math.max(0, breath) * 0.04 * (1 - loco);
+    let elbowR = 0.18 + Math.max(0, -strideWave) * 0.35 * loco
+      + Math.max(0, -breath) * 0.04 * (1 - loco);
 
     if (this.isAttacking) {
       const t = Phaser.Math.Clamp((time - this.attackStartedAt) / ATTACK_DURATION_MS, 0, 1);
@@ -403,8 +638,12 @@ export class ProceduralCharacter extends Phaser.GameObjects.Container {
 
     this.drawArm(this.armL, armLAngle, elbowL, false);
     this.drawArm(this.armR, armRAngle, elbowR, true);
-    this.drawLeg(this.legL, legSwing, kneeL, true);
-    this.drawLeg(this.legR, legRSwing, kneeR, false);
+
+    this.lastHipY = hipY;
+    this.lastFootL = footL;
+    this.lastFootR = footR;
+    this.lastLiftL = liftL;
+    this.lastLiftR = liftR;
   }
 
   // ───────────────────────── Depth sorting ─────────────────────────

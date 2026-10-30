@@ -12,6 +12,18 @@ export const CUBE_HEIGHT = 16;
 export const MACRO_OVERLAY_ALPHA = 0.14;
 export const MACRO_OVERLAY_DEPTH = 40000;
 
+/**
+ * Altura visual de un nivel de elevación. Es 18 y no 16 a propósito: al subir
+ * un nivel el personaje gana 18 de depth y pierde 16 de Y de pantalla, de modo
+ * que un salto hacia el norte siempre termina en un depth estrictamente mayor.
+ */
+export const CLIFF_STEP = 18;
+export const ELEVATION_DEPTH_STEP = CLIFF_STEP;
+
+export const CLIFF_SHADOW_KEY = 'tile_cliff_shadow';
+export const CLIFF_SHADOW_W_KEY = 'tile_cliff_shadow_w';
+export const JUMP_NODE_KEY = 'jump_node_marker';
+
 // El agua se pinta como una lámina continua por debajo de todo el terreno:
 // el lienzo de cada chunk solo asoma por los rombos de agua (el suelo es
 // opaco y tesela sin huecos). Un depth muy bajo evita conflictos entre chunks.
@@ -46,32 +58,34 @@ const GROUND_TINTS: Record<FlatTileType, number[]> = {
 
 type Point = readonly [number, number];
 
-interface MountainVariant {
-  topY: number;
-  leftX: number;
-  rightX: number;
-  cliffH: number;
+/** Paleta de la cara superior de una meseta (roca o nieve). */
+const MOUNTAIN_TOP: Record<'montana' | 'nieve', { base: number; specks: number[]; rock?: number }> = {
+  montana: {
+    base: 0x413f37,
+    specks: [0x4d4a40, 0x35332c, 0x575247, 0x2c2b25, 0x5f5a4d],
+  },
+  nieve: {
+    base: 0x9aa0a4,
+    specks: [0x8b9196, 0xb3b8bb, 0x7c848a, 0xa7adb1],
+    rock: 0x47443c,
+  },
+};
+
+const WALL_COLORS = {
+  sw: { base: 0x3a3833, light: 0x5c574c, dark: 0x201f1c },
+  se: { base: 0x262522, light: 0x3f3c34, dark: 0x14130f },
+} as const;
+
+/** Clave de la cara superior plana según superficie y variante. */
+export function mountainTopTexture(type: 'montana' | 'nieve', variantB: boolean): string {
+  return `tile_montana_top${type === 'nieve' ? '_snow' : ''}${variantB ? '_b' : ''}`;
 }
 
-const MOUNTAIN_KEYS = [
-  'tile_montana',
-  'tile_montana_b',
-  'tile_montana_c',
-  'tile_montana_d',
-  'tile_montana_e',
-  'tile_montana_f',
-] as const;
-
-const MOUNTAIN_VARIANTS: ReadonlyArray<MountainVariant> = [
-  { topY: 4, leftX: 2, rightX: 62, cliffH: 38 },
-  { topY: 7, leftX: 4, rightX: 60, cliffH: 44 },
-  { topY: 3, leftX: 6, rightX: 58, cliffH: 33 },
-  { topY: 9, leftX: 3, rightX: 63, cliffH: 40 },
-  { topY: 5, leftX: 5, rightX: 59, cliffH: 46 },
-  { topY: 8, leftX: 2, rightX: 61, cliffH: 34 },
-];
-
-const MOUNTAIN_TINTS = [0xffffff, 0xf8f9fa, 0xf1f3f4, 0xe9ecee];
+/** Clave del muro vertical para un lado y un desnivel de 1..3 niveles. */
+export function cliffWallTexture(side: 'sw' | 'se', levels: number, variantB: boolean): string {
+  const step = Math.min(3, Math.max(1, Math.round(levels)));
+  return `tile_cliff_wall_${side}_${step}${variantB ? '_b' : ''}`;
+}
 
 export function pickGroundTint(type: FlatTileType, rng: () => number): number {
   const tints = GROUND_TINTS[type] ?? GROUND_TINTS.hierba;
@@ -598,153 +612,225 @@ function createGlowTexture(scene: Phaser.Scene): void {
   texture.refresh();
 }
 
-const ROCK_TOP = 0x47443c;
-const ROCK_LEFT = 0x3a3833;
-const ROCK_RIGHT = 0x262522;
-const ROCK_LINE_LIGHT = 0x5c574c;
 const ROCK_LINE_DARK = 0x1c1b18;
 
-function createMountainTextures(scene: Phaser.Scene): void {
-  MOUNTAIN_VARIANTS.forEach((variant, index) => {
-    const key = MOUNTAIN_KEYS[index];
-    if (scene.textures.exists(key)) return;
+/**
+ * Cara superior de una meseta: rombo plano con la superficie del bioma. La
+ * nieve solo cubre los picos (elevación 3); el resto de mesetas es roca.
+ */
+function createMountainTopTexture(
+  scene: Phaser.Scene,
+  type: 'montana' | 'nieve',
+  variant: 0 | 1,
+): void {
+  const key = mountainTopTexture(type, variant === 1);
+  if (scene.textures.exists(key)) return;
 
-    const g = scene.make.graphics({ x: 0, y: 0 }, false);
-    const rng = mulberry32(stringToHash(`mountain_v2_${index}`));
-    const midY = variant.topY + 16;
-    const frontY = variant.topY + 32;
-    const baseLeftY = midY + variant.cliffH;
-    const baseFrontY = frontY + variant.cliffH;
-    const baseRightY = midY + variant.cliffH;
+  const palette = MOUNTAIN_TOP[type];
+  const snowy = type === 'nieve';
+  const rng = mulberry32(stringToHash(`mtop_${type}_${variant}`));
+  const g = scene.make.graphics({ x: 0, y: 0 }, false);
 
-    // AO: la base se funde con el suelo en vez de cortarse en seco.
-    fillPolygon(g, [
-      [Math.max(0, variant.leftX - 2), baseLeftY + 1],
-      [32, baseFrontY + 1],
-      [Math.min(63, variant.rightX + 2), baseRightY + 1],
-      [Math.min(63, variant.rightX + 1), baseRightY + 8],
-      [32, baseFrontY + 11],
-      [Math.max(0, variant.leftX - 1), baseLeftY + 8],
-    ], 0x000000, 0.34);
-    g.fillStyle(0x000000, 0.2);
-    g.fillEllipse(32, baseFrontY + 3, 62, 14);
-    g.fillStyle(0x000000, 0.14);
-    g.fillEllipse(32, baseFrontY + 4, 44, 9);
+  fillPolygon(g, DIAMOND_BLEED, palette.base);
 
-    // Caras del acantilado: izquierda iluminada, derecha en sombra.
-    fillPolygon(g, [
-      [variant.leftX, midY], [32, frontY], [32, baseFrontY], [variant.leftX, baseLeftY],
-    ], ROCK_LEFT);
-    fillPolygon(g, [
-      [32, frontY], [variant.rightX, midY], [variant.rightX, baseRightY], [32, baseFrontY],
-    ], ROCK_RIGHT);
+  for (let i = 0; i < 100; i++) {
+    const x = 2 + rng() * 60;
+    const y = 2 + rng() * 28;
+    if (Math.abs(x - 32) / 31 + Math.abs(y - 16) / 15 > 0.93) continue;
+    g.fillStyle(palette.specks[Math.floor(rng() * palette.specks.length)], 0.12 + rng() * 0.3);
+    g.fillRect(Math.round(x), Math.round(y), rng() < 0.8 ? 1 : 2, 1);
+  }
 
-    // Estrías verticales: de aquí sale la lectura de pared rocosa.
-    const strata = (
-      x0: number,
-      yTop0: number,
-      x1: number,
-      yTop1: number,
-      light: boolean,
-    ) => {
-      const count = 7;
-      for (let i = 1; i <= count; i++) {
-        const t = i / (count + 1);
-        const x = x0 + (x1 - x0) * t + (rng() - 0.5) * 2.2;
-        const topEdge = yTop0 + (yTop1 - yTop0) * t;
-        const y0 = topEdge + 2 + rng() * 5;
-        const length = variant.cliffH * (0.4 + rng() * 0.5);
-        const y1 = Math.min(topEdge + variant.cliffH - 2, y0 + length);
-        if (y1 <= y0) continue;
-        g.lineStyle(1, light ? ROCK_LINE_LIGHT : 0x201f1c, 0.24 + rng() * 0.26);
-        g.lineBetween(x, y0, x, y1);
+  if (snowy) {
+    // Roca expuesta en los bordes: la nieve no cubre toda la meseta.
+    for (let i = 0; i < 7; i++) {
+      const x = 6 + rng() * 52;
+      const y = 4 + rng() * 24;
+      if (Math.abs(x - 32) / 31 + Math.abs(y - 16) / 15 < 0.55) continue;
+      g.fillStyle(palette.rock ?? 0x47443c, 0.35 + rng() * 0.3);
+      g.fillEllipse(x, y, 4 + rng() * 6, 2 + rng() * 2.4);
+    }
+  }
+
+  g.lineStyle(1, snowy ? 0x6f777d : ROCK_LINE_DARK, snowy ? 0.4 : 0.5);
+  for (let i = 0; i < 4; i++) {
+    const sx = 12 + rng() * 40;
+    const sy = 6 + rng() * 18;
+    g.beginPath();
+    g.moveTo(sx, sy);
+    g.lineTo(sx + 3 + rng() * 5, sy + 2 + rng() * 2);
+    g.lineTo(sx + 7 + rng() * 6, sy + 1 + rng() * 3);
+    g.strokePath();
+  }
+
+  // Canto de meseta: luz noroeste, sombra sureste. Alpha bajo para que un
+  // macizo contiguo no se lea como una rejilla de losas.
+  g.lineStyle(1, 0x6a6458, 0.22);
+  g.lineBetween(32, 1, 1, 16);
+  g.lineBetween(1, 16, 32, 31);
+  g.lineStyle(1, 0x14130f, 0.28);
+  g.lineBetween(32, 31, 63, 16);
+  g.lineBetween(63, 16, 32, 1);
+
+  g.generateTexture(key, TILE_WIDTH, TILE_HEIGHT);
+  g.destroy();
+}
+
+function createMountainTopTextures(scene: Phaser.Scene): void {
+  createMountainTopTexture(scene, 'montana', 0);
+  createMountainTopTexture(scene, 'montana', 1);
+  createMountainTopTexture(scene, 'nieve', 0);
+  createMountainTopTexture(scene, 'nieve', 1);
+}
+
+/**
+ * Muros verticales de acantilado. Cada variante cubre un desnivel de 1..3
+ * niveles y se dibuja como un paralelogramo de 32 px de ancho: la cara SW
+ * (iluminada) mira al vecino sur y la SE (en sombra) al vecino este.
+ */
+function createCliffWallTextures(scene: Phaser.Scene): void {
+  (['sw', 'se'] as const).forEach((side) => {
+    for (let levels = 1; levels <= 3; levels++) {
+      for (let variant = 0; variant < 2; variant++) {
+        const key = cliffWallTexture(side, levels, variant === 1);
+        if (scene.textures.exists(key)) continue;
+
+        const wallH = levels * CLIFF_STEP;
+        const colors = WALL_COLORS[side];
+        const rng = mulberry32(stringToHash(`wall_${side}_${levels}_${variant}`));
+        const g = scene.make.graphics({ x: 0, y: 0 }, false);
+        const topY = (x: number): number => (side === 'sw' ? x / 2 : 16 - x / 2);
+        const shape: ReadonlyArray<Point> = side === 'sw'
+          ? [[0, 0], [32, 16], [32, 16 + wallH], [0, wallH]]
+          : [[0, 16], [32, 0], [32, wallH], [0, 16 + wallH]];
+
+        fillPolygon(g, shape, colors.base);
+
+        // Estrías verticales: lectura de roca sedimentaria del briefing.
+        for (let i = 0; i < 11; i++) {
+          const x = 1.5 + i * 2.9 + (rng() - 0.5) * 1.6;
+          const y0 = topY(x) + 2 + rng() * 3;
+          const y1 = topY(x) + wallH - 2 - rng() * 3;
+          if (y1 <= y0) continue;
+          g.lineStyle(1, rng() > 0.42 ? colors.light : colors.dark, 0.16 + rng() * 0.26);
+          g.lineBetween(x, y0, x, y1);
+        }
+
+        for (let i = 0; i < 4; i++) {
+          const x = 4 + rng() * 22;
+          const y = topY(x) + 5 + rng() * Math.max(2, wallH - 8);
+          g.lineStyle(1, colors.dark, 0.4);
+          g.lineBetween(x - 2, y, x + 3 + rng() * 4, y + (rng() - 0.5) * 2);
+        }
+
+        g.lineStyle(1.5, colors.light, side === 'sw' ? 0.45 : 0.22);
+        g.lineBetween(shape[0][0], shape[0][1], shape[1][0], shape[1][1]);
+
+        // AO del pie: el muro se funde con el piso inferior, no corta en seco.
+        for (let band = 0; band < 3; band++) {
+          const inset = band * 2;
+          const bottom: ReadonlyArray<Point> = side === 'sw'
+            ? [[0, wallH - 7 + inset], [32, 16 + wallH - 7 + inset], [32, 16 + wallH], [0, wallH]]
+            : [[0, 16 + wallH - 7 + inset], [32, wallH - 7 + inset], [32, wallH], [0, 16 + wallH]];
+          fillPolygon(g, bottom, 0x000000, 0.1 + band * 0.09);
+        }
+
+        g.generateTexture(key, 32, 16 + wallH);
+        g.destroy();
       }
-      for (let i = 0; i < 3; i++) {
-        const t = 0.2 + rng() * 0.6;
-        const x = x0 + (x1 - x0) * t;
-        const topEdge = yTop0 + (yTop1 - yTop0) * t;
-        const y = topEdge + 6 + rng() * (variant.cliffH * 0.55);
-        g.lineStyle(1, ROCK_LINE_DARK, 0.4);
-        g.lineBetween(x - 3 - rng() * 3, y, x + 2 + rng() * 3, y + (rng() - 0.5) * 2);
-      }
-    };
-    strata(variant.leftX, midY, 32, frontY, true);
-    strata(32, frontY, variant.rightX, midY, false);
-
-    // Aristas del borde superior (luz fija arriba-izquierda). Suaves: en un
-    // macizo contiguo cada tile no debe leerse como losa de pavimento.
-    g.lineStyle(2, ROCK_LINE_LIGHT, 0.25);
-    g.lineBetween(variant.leftX, midY, 32, frontY);
-    g.lineStyle(1, 0x161513, 0.4);
-    g.lineBetween(32, frontY, variant.rightX, midY);
-
-    // Meseta plana.
-    fillPolygon(g, [
-      [32, variant.topY], [variant.rightX, midY], [32, frontY], [variant.leftX, midY],
-    ], ROCK_TOP);
-    g.lineStyle(2, 0x6a6458, 0.12);
-    g.lineBetween(32, variant.topY + 1, variant.leftX + 1, midY);
-    g.lineStyle(1, 0x201f1b, 0.18);
-    g.lineBetween(32, variant.topY + 1, variant.rightX - 1, midY);
-
-    // Grano de la meseta.
-    for (let i = 0; i < 40; i++) {
-      const x = 8 + rng() * 48;
-      const y = variant.topY + 2 + rng() * 26;
-      if (Math.abs(x - 32) / 30 + Math.abs(y - midY) / 15 > 0.92) continue;
-      g.fillStyle(rng() > 0.45 ? 0x575348 : 0x33312b, 0.16 + rng() * 0.26);
-      g.fillRect(Math.round(x), Math.round(y), rng() > 0.8 ? 2 : 1, 1);
     }
-
-    // Grietas de la meseta.
-    g.lineStyle(1, 0x211f1b, 0.55);
-    for (let i = 0; i < 3; i++) {
-      const sx = 16 + rng() * 30;
-      const sy = variant.topY + 6 + rng() * 14;
-      g.beginPath();
-      g.moveTo(sx, sy);
-      g.lineTo(sx + 3 + rng() * 5, sy + 2 + rng() * 3);
-      g.lineTo(sx + 7 + rng() * 6, sy + 1 + rng() * 4);
-      g.strokePath();
-    }
-
-    // Rocas sueltas sobre la meseta.
-    for (let i = 0; i < 2; i++) {
-      const x = 24 + rng() * 20;
-      const y = variant.topY + 9 + rng() * 12;
-      const w = 5 + rng() * 5;
-      g.fillStyle(0x2c2a25, 0.9);
-      g.fillEllipse(x + 1, y + 1.5, w, w * 0.5);
-      g.fillStyle(0x535047, 1);
-      g.fillEllipse(x, y, w * 0.84, w * 0.4);
-      g.fillStyle(0x6a6558, 0.8);
-      g.fillEllipse(x - w * 0.16, y - w * 0.1, w * 0.4, w * 0.18);
-    }
-
-    // Musgo apagado en algunas cumbres.
-    if (index % 2 === 0) {
-      g.fillStyle(0x3b452c, 0.55);
-      for (let i = 0; i < 3; i++) {
-        g.fillEllipse(18 + rng() * 30, variant.topY + 8 + rng() * 12, 5 + rng() * 6, 2 + rng() * 2.4);
-      }
-    }
-
-    // Cascotes al pie.
-    g.fillStyle(0x2b2a25, 0.9);
-    g.fillEllipse(variant.leftX + 7 + rng() * 8, baseLeftY + 1, 5, 2.4);
-    g.fillEllipse(variant.rightX - 8 - rng() * 8, baseRightY + 1, 4, 2);
-
-    g.generateTexture(key, TILE_WIDTH, 96);
-    g.destroy();
   });
 }
 
-export function pickMountainTexture(rng: () => number): string {
-  return MOUNTAIN_KEYS[Math.floor(rng() * MOUNTAIN_KEYS.length)] ?? MOUNTAIN_KEYS[0];
+/**
+ * Sombra AO que el acantilado proyecta sobre el piso inferior. Se recorta al
+ * rombo del tile y se concentra en la arista compartida con el muro: N para
+ * un vecino norte más alto y W para un vecino oeste más alto.
+ */
+function createCliffShadowTextures(scene: Phaser.Scene): void {
+  const make = (key: string, cx: number, cy: number, north: boolean): void => {
+    if (scene.textures.exists(key)) return;
+    const texture = scene.textures.createCanvas(key, TILE_WIDTH, TILE_HEIGHT);
+    if (!texture) return;
+    const ctx = texture.context;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(32, 0);
+    ctx.lineTo(64, 16);
+    ctx.lineTo(32, 32);
+    ctx.lineTo(0, 16);
+    ctx.closePath();
+    ctx.clip();
+
+    const gradient = ctx.createRadialGradient(cx, cy, 1, cx, cy, 38);
+    gradient.addColorStop(0, 'rgba(0,0,0,0.55)');
+    gradient.addColorStop(0.35, 'rgba(0,0,0,0.34)');
+    gradient.addColorStop(0.7, 'rgba(0,0,0,0.16)');
+    gradient.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, TILE_WIDTH, TILE_HEIGHT);
+
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    if (north) {
+      ctx.moveTo(0, 16);
+      ctx.lineTo(32, 0);
+      ctx.lineTo(64, 16);
+    } else {
+      ctx.moveTo(32, 0);
+      ctx.lineTo(0, 16);
+      ctx.lineTo(32, 32);
+    }
+    ctx.stroke();
+    ctx.restore();
+    texture.refresh();
+  };
+
+  make(CLIFF_SHADOW_KEY, 32, 0, true);
+  make(CLIFF_SHADOW_W_KEY, 0, 16, false);
 }
 
-export function pickMountainTint(rng: () => number): number {
-  return MOUNTAIN_TINTS[Math.floor(rng() * MOUNTAIN_TINTS.length)] ?? 0xffffff;
+/** Runa de borde de salto: doble chevrón de qi, simétrico hacia arriba. */
+function createJumpNodeTexture(scene: Phaser.Scene): void {
+  if (scene.textures.exists(JUMP_NODE_KEY)) return;
+  const texture = scene.textures.createCanvas(JUMP_NODE_KEY, 48, 30);
+  if (!texture) return;
+  const ctx = texture.context;
+
+  const glow = ctx.createRadialGradient(24, 17, 1, 24, 17, 20);
+  glow.addColorStop(0, 'rgba(126,178,150,0.32)');
+  glow.addColorStop(0.6, 'rgba(96,140,118,0.14)');
+  glow.addColorStop(1, 'rgba(96,140,118,0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, 48, 30);
+
+  ctx.strokeStyle = 'rgba(190,222,200,0.9)';
+  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(13, 21);
+  ctx.lineTo(24, 9);
+  ctx.lineTo(35, 21);
+  ctx.stroke();
+
+  ctx.strokeStyle = 'rgba(150,196,170,0.55)';
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.moveTo(16, 25);
+  ctx.lineTo(24, 16);
+  ctx.lineTo(32, 25);
+  ctx.stroke();
+
+  for (const [x, y, r] of [[10, 12, 1.2], [38, 12, 1.0], [24, 5, 1.4], [17, 8, 0.8], [31, 8, 0.9]]) {
+    ctx.fillStyle = 'rgba(214,236,222,0.55)';
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  texture.refresh();
 }
 
 function createDecalTexture(
@@ -1012,7 +1098,10 @@ export function ensureTerrainTextures(scene: Phaser.Scene): void {
   }
   createWaterFlowTexture(scene);
   createWaterShadeTextures(scene);
-  createMountainTextures(scene);
+  createMountainTopTextures(scene);
+  createCliffWallTextures(scene);
+  createCliffShadowTextures(scene);
+  createJumpNodeTexture(scene);
   createDecalTextures(scene);
   createMacroNoiseTexture(scene);
   createInstanceTextures(scene);

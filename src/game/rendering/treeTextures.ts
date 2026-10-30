@@ -2,7 +2,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Flora procedural con volumen cel-shading. Seis especies dibujadas en tres
 // capas de follaje (oscuro en la base, medio, claro arriba a la izquierda,
-// luz fija del suroeste) + sombra de anclaje separada. Las palmeras usan
+// luz fija del noroeste y sombra al sureste) + sombra de anclaje separada. Las palmeras usan
 // curvas Bézier muestreadas para que las hojas caigan, nunca líneas rectas.
 // ─────────────────────────────────────────────────────────────────────────────
 import type Phaser from 'phaser';
@@ -112,6 +112,17 @@ function drawTrunk(
   pal: Palette,
   roots = true,
 ): void {
+  // sampleQuad entrega primero la base (y=118) y al final la copa: el punto
+  // de apoyo es pts[0], no el último.
+  const base = pts[0];
+
+  // Contacto con el suelo: mancha de oclusión bajo la base. Funde el corte
+  // horizontal del tronco con la tesela y ancla el árbol visualmente.
+  g.fillStyle(0x000000, 0.16);
+  g.fillEllipse(base.x, base.y + 1, widthBase + 18, 9);
+  g.fillStyle(0x000000, 0.28);
+  g.fillEllipse(base.x, base.y + 1, widthBase + 4, 6);
+
   const silhouette = trunkEdges(pts, widthBase + 2.4, widthTop + 2.4);
   poly(g, [...silhouette.plus, ...silhouette.minus.slice().reverse()], pal.dark);
 
@@ -131,7 +142,6 @@ function drawTrunk(
   }
 
   if (roots) {
-    const base = pts[pts.length - 1];
     const half = widthBase / 2;
     poly(g, [
       { x: base.x - half - 1, y: base.y },

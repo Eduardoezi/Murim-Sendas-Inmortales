@@ -58,10 +58,19 @@ export interface PlayerStoreState extends PlayerData {
 
   equipment: PlayerEquipment;
 
+  /**
+   * Habilidades aprendidas. No hay árbol de habilidades todavía: qigong se
+   * siembra como aprendida para que el salto de acantilado sea usable; vaciar
+   * la lista lo bloquea sin tocar el resto de la lógica.
+   */
+  learnedSkills: string[];
+
   // Métodos de mutación
   setPlayer: (data: Partial<PlayerStoreState>) => void;
   equipWeapon: (weapon: WeaponType) => void;
   equipArmor: (armor: ArmorType) => void;
+  hasSkill: (skillId: string) => boolean;
+  learnSkill: (skillId: string) => void;
   startMeditation: (location: 'private' | 'world') => void;
   stopMeditation: () => void;
   tickCultivation: () => void | Promise<void>;
@@ -98,6 +107,7 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
   attributes: { ...DEFAULT_ATTRIBUTES },
   appearance: { ...DEFAULT_APPEARANCE }, // <-- Solucionado con la estructura real
   equipment: { ...DEFAULT_EQUIPMENT },
+  learnedSkills: ['qigong'],
   
   cb_actual: 0,
   cb_requerido: 100,
@@ -117,6 +127,14 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
   equipArmor: (armor) => set((state) => ({
     equipment: { ...state.equipment, armor },
   })),
+
+  hasSkill: (skillId) => get().learnedSkills.includes(skillId),
+
+  learnSkill: (skillId) => set((state) => (
+    state.learnedSkills.includes(skillId)
+      ? {}
+      : { learnedSkills: [...state.learnedSkills, skillId] }
+  )),
 
   startMeditation: (location) => {
     // Evitar iniciar si ya está meditando
@@ -229,6 +247,7 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
       attributes: { ...DEFAULT_ATTRIBUTES },
       appearance: { ...DEFAULT_APPEARANCE }, // Restablecer apariencia
       equipment: { ...DEFAULT_EQUIPMENT },
+      learnedSkills: ['qigong'],
       cb_actual: 0,
       cb_requerido: 100,
       eficienciaBase: 5,

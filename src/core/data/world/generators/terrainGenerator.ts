@@ -21,6 +21,12 @@ export interface Tile {
   density: number; 
   isEdgeWater: boolean; 
   isNearWater: boolean;
+  /**
+   * Altura del relieve: 0 = suelo base (llanura, agua, desierto) y 1..3 =
+   * mesetas montañosas (estribación, montaña media, pico nevado). Dos tiles
+   * contiguos con elevaciones distintas forman un acantilado vertical.
+   */
+  elevation: number;
   /** Tramo navegable del Huang He / Yangtsé / canal (barcas/pesca futuras). */
   navigable?: boolean;
   /** ID geográfico real si aplica (river_yellow, desert_gobi, peak_wudang...). */
@@ -64,7 +70,7 @@ function biomeVegetation(biome: BiomeType): number {
 function geoTileFor(mapX: number, mapY: number, provinceBiome: BiomeType, seedNum: number): Tile {
   // CACHE: cada tile se muestrea una sola vez de por vida (fix lag carga de chunks)
   const g = sampleGeoCached(mapX, mapY);
-  const base: Tile = { x: mapX, y: mapY, type: 'hierba', density: 0, isEdgeWater: false, isNearWater: false, waterDepth: 0 };
+  const base: Tile = { x: mapX, y: mapY, type: 'hierba', density: 0, isEdgeWater: false, isNearWater: false, waterDepth: 0, elevation: 0 };
 
   switch (g.kind) {
     case 'mar':
@@ -83,11 +89,11 @@ function geoTileFor(mapX: number, mapY: number, provinceBiome: BiomeType, seedNu
     case 'desierto':
       return { ...base, type: 'arena', density: 0.02, geoId: g.desertId };
     case 'montania_alta':
-      return { ...base, type: 'nieve', density: 0.0, geoId: undefined };
+      return { ...base, type: 'nieve', elevation: g.heightLevel ?? 3, density: 0.0, geoId: undefined };
     case 'montania_media':
-      return { ...base, type: 'montana', density: 0.15 };
+      return { ...base, type: 'montana', elevation: g.heightLevel ?? 2, density: 0.15 };
     case 'estribacion':
-      return { ...base, type: 'montana', density: 0.35 };
+      return { ...base, type: 'montana', elevation: g.heightLevel ?? 1, density: 0.35 };
     default: break; // null → tierra libre
   }
 
@@ -189,8 +195,17 @@ export function generateChunkTerrain(
                       isNeighborWater(mapX, mapY + 1) || isNeighborWater(mapX, mapY - 1);
       }
 
-      tiles.push({ x: mapX, y: mapY, type, density, isEdgeWater, isNearWater, waterDepth });
+      tiles.push({ x: mapX, y: mapY, type, density, isEdgeWater, isNearWater, waterDepth, elevation: 0 });
     }
   }
   return tiles;
+}
+
+/**
+ * Elevación de cualquier coordenada sin cargar el chunk: 0 = base y 1..3 =
+ * mesetas montañosas. Es la misma fuente que `geoTileFor`, así que colisiones
+ * y render nunca discrepan aunque el tile no esté renderizado.
+ */
+export function getElevationAt(mapX: number, mapY: number): number {
+  return sampleGeoCached(Math.round(mapX), Math.round(mapY)).heightLevel ?? 0;
 }

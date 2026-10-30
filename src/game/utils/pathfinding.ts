@@ -63,7 +63,8 @@ export function findPath(
   startY: number,
   targetX: number,
   targetY: number,
-  isBlocked: (x: number, y: number) => boolean
+  isBlocked: (x: number, y: number) => boolean,
+  canStep?: (fromX: number, fromY: number, toX: number, toY: number) => boolean,
 ): Point[] {
   if (startX === targetX && startY === targetY) return [{ x: startX, y: startY }];
 
@@ -114,6 +115,8 @@ export function findPath(
 
       if (closedSet.has(nKey)) continue;
       if (isBlocked(nx, ny)) continue;
+      // Un acantilado no se cruza caminando: el salto es la única vía.
+      if (canStep && !canStep(current.x, current.y, nx, ny)) continue;
 
       // Eliminamos el bloqueo de esquinas (anti corner-cutting) para que sea más fácil moverse.
       
